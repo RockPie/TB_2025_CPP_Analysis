@@ -1,0 +1,15 @@
+# Ignore compiled files
+*.log
+*.tmp
+*.bak
+*.aux
+*.out
+*.toc
+
+.DS_Store
+._*
+
+# ignore dump folder
+dump/
+data/
+CRU_RDH_Decoder/
