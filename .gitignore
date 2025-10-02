@@ -8,8 +8,13 @@
 
 .DS_Store
 ._*
+CMakeCache.txt
+.zshrc_local
 
 # ignore dump folder
 dump/
 data/
+build/
 CRU_RDH_Decoder/
+.vscode/
+CMakeFiles/
