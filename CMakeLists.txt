@@ -27,7 +27,7 @@ if(APPLE)
 endif()
 
 # ---- Dependencies ----
-find_package(ROOT 6.26 REQUIRED COMPONENTS
+find_package(ROOT 6.36 REQUIRED COMPONENTS
   Core RIO Hist Tree TreePlayer MathCore Graf Gpad Rint Thread
 )
 
@@ -83,11 +83,12 @@ foreach(src IN LISTS SCRIPT_SOURCES)
 
   target_link_libraries(${exec_name}
     PRIVATE
-      cxxopts
-      spdlog::spdlog
-      binparse::binparse
-      ROOT::Core ROOT::RIO ROOT::Hist ROOT::Tree ROOT::MathCore
-      Threads::Threads           # portable, no-op on MSVC, needed on Linux
+        cxxopts
+        spdlog::spdlog
+        binparse::binparse
+        ROOT::Core ROOT::RIO ROOT::Hist ROOT::Tree ROOT::MathCore
+        Threads::Threads           # portable, no-op on MSVC, needed on Linux
+        ROOT::RHTTP
   )
 
   target_compile_definitions(${exec_name} PRIVATE STAGE_NAME="${exec_name}")

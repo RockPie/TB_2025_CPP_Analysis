@@ -18,3 +18,4 @@ build/
 CRU_RDH_Decoder/
 .vscode/
 CMakeFiles/
+.snakemake/
