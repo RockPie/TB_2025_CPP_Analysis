@@ -144,7 +144,7 @@ int main(int argc, char **argv){
 
     UShort_t  input_fpga_id;
     ULong64_t input_timestamp;
-    UInt_t    input_daqh_list[4];
+    Int_t    input_daqh_list[4];
     Bool_t    input_tc_list[FPGA_CHANNEL_NUMBER];
     Bool_t    input_tp_list[FPGA_CHANNEL_NUMBER];
     UInt_t    input_val0_list[FPGA_CHANNEL_NUMBER];
