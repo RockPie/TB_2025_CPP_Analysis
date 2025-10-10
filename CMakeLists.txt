@@ -28,7 +28,7 @@ endif()
 
 # ---- Dependencies ----
 find_package(ROOT 6.36 REQUIRED COMPONENTS
-  Core RIO Hist Tree TreePlayer MathCore Graf Gpad Rint Thread
+  Core RIO Hist Tree TreePlayer MathCore Graf Gpad Rint Thread 
 )
 
 # (Optional) Threads is safe to link on Linux; ROOT may bring it anyway
@@ -87,7 +87,8 @@ foreach(src IN LISTS SCRIPT_SOURCES)
         spdlog::spdlog
         binparse::binparse
         ROOT::Core ROOT::RIO ROOT::Hist ROOT::Tree ROOT::MathCore
-        Threads::Threads           # portable, no-op on MSVC, needed on Linux
+        ROOT::Graf ROOT::Gpad
+        Threads::Threads
         ROOT::RHTTP
   )
 

@@ -9,16 +9,23 @@
 #include <vector>
 #include <chrono>
 #include <string>
+#include <array>
+#include <unordered_set>
 
 #include <TFile.h>
 #include <TTree.h>
 #include <TBranch.h>
 #include <THttpServer.h>
+#include <TCanvas.h>
+#include <TH2D.h>
+#include <TVectorD.h>
+#include <TLatex.h>
 
 #include "cxxopts.hpp"
 
 #define FPGA_CHANNEL_NUMBER 152
 #define BX_PER_ORBIT 3564
+#define FPGA_NUMBER 2
 
 #define VERBOSE_LEVEL_SILENT    0
 #define VERBOSE_LEVEL_ERROR     1
@@ -252,7 +259,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                             machinegun_index = std::round(static_cast<double>(header_shift) / timestamp_diff_mg);
                             candidate_header_line_index = data_line_index;
                             if (machinegun_index > max_machinegun_index) {
-                                max_machinegun_index = machinegun_index;
+                                max_machinegun_index = 16;
                             }
                             if (true) {
                                 spdlog::info("  (g)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
@@ -678,6 +685,109 @@ int main(int argc, char** argv) {
     spdlog::info("===================================================");
 
     spdlog::info("Writing output to {}", output_file);
+
+    int chn_map_y_bin = 512;
+    // x: channel 0-152
+    // y: adc value 0-1024
+    TCanvas* c_chn_map = new TCanvas("c_chn_map", "Channel Map", 1200, 2400);
+    TH2D* adc_chn_map_0 = new TH2D("adc_chn_map", "ADC Channel Map;Channel;ADC Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* tot_chn_map_0 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* toa_chn_map_0 = new TH2D("toa_chn_map", "ToA Channel Map;Channel;ToA Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* adc_chn_map_1 = new TH2D("adc_chn_map", "ADC Channel Map;Channel;ADC Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* tot_chn_map_1 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* toa_chn_map_1 = new TH2D("toa_chn_map", "ToA Channel Map;Channel;ToA Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+
+
+    // Fill the histograms
+    Long64_t total_entries = output_tree->GetEntries();
+    for (Long64_t entry = 0; entry < total_entries; ++entry)
+    {
+        output_tree->GetEntry(entry);
+        if (branch_fpga_id[0] == 0)
+        {
+            for (int ch = 0; ch < FPGA_CHANNEL_NUMBER; ++ch)
+            {
+                adc_chn_map_0->Fill(ch, branch_val0_list[ch]);
+                tot_chn_map_0->Fill(ch, branch_val1_list[ch]);
+                toa_chn_map_0->Fill(ch, branch_val2_list[ch]);
+            }
+            continue;
+        }
+        if (branch_fpga_id[0] == 1)
+        {
+            for (int ch = 0; ch < FPGA_CHANNEL_NUMBER; ++ch)
+            {
+                adc_chn_map_1->Fill(ch, branch_val0_list[ch]);
+                tot_chn_map_1->Fill(ch, branch_val1_list[ch]);
+                toa_chn_map_1->Fill(ch, branch_val2_list[ch]);
+            }
+            continue;
+        }
+    }
+
+    adc_chn_map_0->SetStats(0);
+    tot_chn_map_0->SetStats(0);
+    toa_chn_map_0->SetStats(0);
+    adc_chn_map_0->SetTitle("");
+    tot_chn_map_0->SetTitle("");
+    toa_chn_map_0->SetTitle("");
+
+    adc_chn_map_1->SetStats(0);
+    tot_chn_map_1->SetStats(0);
+    toa_chn_map_1->SetStats(0);
+    adc_chn_map_1->SetTitle("");
+    tot_chn_map_1->SetTitle("");
+    toa_chn_map_1->SetTitle("");
+
+    c_chn_map->Divide(2, 3);
+    c_chn_map->cd(1);
+    adc_chn_map_0->Draw("COLZ");
+    c_chn_map->cd(3);
+    tot_chn_map_0->Draw("COLZ");
+    c_chn_map->cd(5);
+    toa_chn_map_0->Draw("COLZ");
+    c_chn_map->cd(2);
+    adc_chn_map_1->Draw("COLZ");
+    c_chn_map->cd(4);
+    tot_chn_map_1->Draw("COLZ");
+    c_chn_map->cd(6);
+    toa_chn_map_1->Draw("COLZ");
+
+    // add annotation to the plots
+    c_chn_map->cd(1);
+    TLatex latex_adc;
+    latex_adc.SetNDC();
+    latex_adc.SetTextSize(0.05);
+    latex_adc.DrawLatex(0.10, 0.92, ("ADC (VLDB 0), Input: " + input_file_name).c_str());
+    c_chn_map->cd(3);
+    TLatex latex_tot;
+    latex_tot.SetNDC();
+    latex_tot.SetTextSize(0.05);
+    latex_tot.DrawLatex(0.10, 0.92, ("ToT (VLDB 0), Input: " + input_file_name).c_str());
+    c_chn_map->cd(5);
+    TLatex latex_toa;
+    latex_toa.SetNDC();
+    latex_toa.SetTextSize(0.05);
+    latex_toa.DrawLatex(0.10, 0.92, ("ToA (VLDB 0), Input: " + input_file_name).c_str());
+    c_chn_map->cd(2);
+    TLatex latex_adc1;
+    latex_adc1.SetNDC();
+    latex_adc1.SetTextSize(0.05);
+    latex_adc1.DrawLatex(0.10, 0.92, ("ADC (VLDB 1), Input: " + input_file_name).c_str());
+    c_chn_map->cd(4);
+    TLatex latex_tot1;
+    latex_tot1.SetNDC();
+    latex_tot1.SetTextSize(0.05);
+    latex_tot1.DrawLatex(0.10, 0.92, ("ToT (VLDB 1), Input: " + input_file_name).c_str());
+    c_chn_map->cd(6);
+    TLatex latex_toa1;
+    latex_toa1.SetNDC();
+    latex_toa1.SetTextSize(0.05);
+    latex_toa1.DrawLatex(0.10, 0.92, ("ToA (VLDB 1), Input: " + input_file_name).c_str());
+
+    output_root->cd();
+    c_chn_map->Write();
+
     std::string _legal_fpga_id_list_str = "";
     for (const auto& id : vldb_ids) {
         _legal_fpga_id_list_str += std::to_string(static_cast<int>(id)) + " ";
@@ -685,6 +795,8 @@ int main(int argc, char** argv) {
     TNamed("Rootifier_legal_fpga_id_list", _legal_fpga_id_list_str.c_str()).Write();
     output_root->Write();
     output_root->Close();
+
+    c_chn_map->Close();
 
     return 0;
 }
