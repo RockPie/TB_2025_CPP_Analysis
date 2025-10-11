@@ -1,105 +1,133 @@
-# Snakefile (fixed)
-import os
+# Snakefile
 from pathlib import Path
 
 shell.executable("/bin/bash")
 
-# ---- Config (optional caps) ----
-EVENTS_101 = int(config.get("events_101", -1))
-EVENTS_102 = int(config.get("events_102", -1))
+# ---- Paths ----
+SCRIPTS_SRC = "script"                 # .cxx lives here
+BUILD_DIR   = "build"
+BIN_DIR     = f"{BUILD_DIR}/bin/scripts"
+DATA_DIRS   = ["data/beamtests", "data/labtests"]
+DUMP_DIR    = "dump"
+LOG_DIR     = "log"
 
-# ---- Executables built by CMake ----
-EXE_100 = "build/bin/scripts/100_RootConverter"
-EXE_101 = "build/bin/scripts/101_EventRecon"
-EXE_102 = "build/bin/scripts/102_EventMatch"
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap"]
 
-# ---- Source tracking for rebuilds ----
-CMAKE_TOP = "CMakeLists.txt"
-SCRIPT_SOURCES = sorted(map(str, Path("script").glob("*.cxx"))) + \
-                 sorted(map(str, Path("script").glob("*.cpp")))
-INCLUDE_HEADERS = sorted(map(str, Path("include").rglob("*"))) if Path("include").exists() else []
+# ---- Discover valid (dtype, run) pairs ----
+pairs = []
+for folder in DATA_DIRS:
+    dtype = Path(folder).name  # "beamtests" or "labtests"
+    for f in Path(folder).glob("Run*.ch2g"):
+        if f.name.startswith('.') or not f.is_file():
+            continue
+        pairs.append({"dtype": dtype, "run": f.stem})
 
-# ---- Discover input data (flat files under each dir) ----
-def _regular_nonhidden_files(folder):
-    p = Path(folder)
-    if not p.exists():
-        return []
-    return [
-        x.name
-        for x in p.glob("*")          # '*' won't match dotfiles, but keep an explicit guard anyway
-        if x.is_file() and not x.name.startswith(".")
-    ]
-
-LAB_BASES  = _regular_nonhidden_files("data/labtests")
-BEAM_BASES = _regular_nonhidden_files("data/beamtests")
-
-# Final targets
-ALL_OUTPUTS = \
-    [f"dump/102_EventMatch/labtests/{b}.root"  for b in LAB_BASES] + \
-    [f"dump/102_EventMatch/beamtests/{b}.root" for b in BEAM_BASES]
+# Final analysis targets (only for discovered runs)
+FINAL_TARGETS = [f"{DUMP_DIR}/103_HitMap/{p['dtype']}/{p['run']}.root" for p in pairs]
+# Also require all executables be present
+FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
 rule all:
-    input: ALL_OUTPUTS
+    input:
+        FINAL_EXES,
+        FINAL_TARGETS
 
-# ---------------- CMake build ----------------
+# =========================
+# Build system integration
+# =========================
+
+# Configure CMake once (stamp file)
 rule cmake_configure:
-    input:  CMAKE_TOP
-    output: touch("build/.configured")
-    shell:  r"""
-        mkdir -p build
-        cmake -S . -B build
-        touch {output}
-    """
-
-rule build_scripts:
-    input:
-        "build/.configured",
-        CMAKE_TOP,
-        SCRIPT_SOURCES,
-        INCLUDE_HEADERS
     output:
-        EXE_100,
-        EXE_101,
-        EXE_102
-    shell:  r"""
-        cmake --build build --target all_scripts -j
-        test -x {output[0]} && test -x {output[1]} && test -x {output[2]}
-    """
+        touch(f"{BUILD_DIR}/.cmake_configured")
+    log:
+        f"{LOG_DIR}/build/configure.log"
+    shell:
+        r"""
+        mkdir -p {BUILD_DIR}
+        mkdir -p {LOG_DIR}/build
+        cmake -S . -B {BUILD_DIR} > {log} 2>&1
+        """
 
-# ---------------- Pipeline ----------------
-# 100: -i <raw> -o <root>
-rule root_converter:
+# Build any executable target via CMake (single rule, wildcarded)
+rule build_exe:
     input:
-        exe=EXE_100,
-        raw=lambda w: f"data/{w.dataset}/{w.base}"
+        cfg = rules.cmake_configure.output[0],
+        src = lambda wc: f"{SCRIPTS_SRC}/{wc.name}.cxx"
     output:
-        "dump/100_RootConverter/{dataset}/{base}.root"
-    run:
-        Path(Path(output[0]).parent).mkdir(parents=True, exist_ok=True)
-        shell(r'"{input.exe}" -i "{input.raw}" -o "{output}"')
+        exe = f"{BIN_DIR}/{{name}}"
+    log:
+        f"{LOG_DIR}/build/{{name}}.log"
+    shell:
+        r"""
+        mkdir -p {BIN_DIR}
+        cmake --build {BUILD_DIR} --target {wildcards.name} -j > {log} 2>&1
+        """
 
-# 101: -f <in.root> -o <out.root> -e <events>
-rule event_recon:
-    input:
-        exe=EXE_101,
-        inroot="dump/100_RootConverter/{dataset}/{base}.root"
-    output:
-        "dump/101_EventRecon/{dataset}/{base}.root"
-    params:
-        events=lambda w: EVENTS_101
-    run:
-        Path(Path(output[0]).parent).mkdir(parents=True, exist_ok=True)
-        shell(r'"{input.exe}" -f "{input.inroot}" -o "{output}" -e {params.events}')
+# =========================
+# Data processing pipeline
+# =========================
 
-# 102: -f <in.root> -o <out.root> -e <events>
-rule event_match:
+# Stage 100: RootConverter
+rule RootConverter:
     input:
-        exe=EXE_102,
-        inroot="dump/101_EventRecon/{dataset}/{base}.root"
+        exe   = f"{BIN_DIR}/100_RootConverter",
+        ch2g  = lambda wc: f"data/{wc.dtype}/{wc.run}.ch2g"
     output:
-        "dump/102_EventMatch/{dataset}/{base}.root"
-    params:
-        events=lambda w: EVENTS_102
-    run:
-        Path(Path(output[0]).parent).mkdir(parents=True, exist_ok=True)
-        shell(r'"{input.exe}" -f "{input.inroot}" -o "{output}" -e {params.events}')
+        root  = f"{DUMP_DIR}/100_RootConverter/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/100_RootConverter/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/100_RootConverter/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/100_RootConverter/{wildcards.dtype}
+        "{input.exe}" -i "{input.ch2g}" -o "{output.root}" > "{log}" 2>&1
+        """
+
+# Stage 101: EventRecon
+rule EventRecon:
+    input:
+        exe     = f"{BIN_DIR}/101_EventRecon",
+        root_in = f"{DUMP_DIR}/100_RootConverter/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/101_EventRecon/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/101_EventRecon/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/101_EventRecon/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/101_EventRecon/{wildcards.dtype}
+        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        """
+
+# Stage 102: EventMatch
+rule EventMatch:
+    input:
+        exe     = f"{BIN_DIR}/102_EventMatch",
+        root_in = f"{DUMP_DIR}/101_EventRecon/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/102_EventMatch/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/102_EventMatch/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/102_EventMatch/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/102_EventMatch/{wildcards.dtype}
+        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        """
+
+# Stage 103: HitMap
+rule HitMap:
+    input:
+        exe     = f"{BIN_DIR}/103_HitMap",
+        root_in = f"{DUMP_DIR}/102_EventMatch/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/103_HitMap/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/103_HitMap/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/103_HitMap/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/103_HitMap/{wildcards.dtype}
+        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        """

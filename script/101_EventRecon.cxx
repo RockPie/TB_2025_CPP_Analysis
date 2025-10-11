@@ -147,7 +147,7 @@ int main(int argc, char **argv){
 
     UShort_t  input_fpga_id;
     ULong64_t input_timestamp;
-    Int_t    input_daqh_list[4];
+    UInt_t    input_daqh_list[4];
     Bool_t    input_tc_list[FPGA_CHANNEL_NUMBER];
     Bool_t    input_tp_list[FPGA_CHANNEL_NUMBER];
     UInt_t    input_val0_list[FPGA_CHANNEL_NUMBER];
@@ -475,52 +475,52 @@ int main(int argc, char **argv){
     // -- generate machinegun 2D histogram for each channel
     // -- X axis: machinegun index
     // -- Y axis: ADC/ToT/ToA
-    int channel_mg_y_bins = 256 ;
-    for (int _fpga_index = 0; _fpga_index < legal_fpga_id_list.size(); _fpga_index++) {
-        TCanvas *canvas = new TCanvas(
-            ("fpga" + std::to_string(legal_fpga_id_list[_fpga_index]) + "_canvas").c_str(),
-            ("FPGA" + std::to_string(legal_fpga_id_list[_fpga_index]) + " Canvas").c_str(),
-            1200, 800);
-        canvas->Divide(int(std::ceil(std::sqrt(FPGA_CHANNEL_NUMBER))), int(std::ceil(std::sqrt(FPGA_CHANNEL_NUMBER))));
-        auto _fpga_id = legal_fpga_id_list[_fpga_index];
-        for (int _channel_index = 0; _channel_index < FPGA_CHANNEL_NUMBER; _channel_index++) {
-            TH2D *hist2d_val0 = new TH2D(
-                ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val0").c_str(),
-                ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val0").c_str(),
-                machine_gun_samples, 0, machine_gun_samples,
-                channel_mg_y_bins, 0, 1024);
-            TH2D *hist2d_val1 = new TH2D(
-                ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val1").c_str(),
-                ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val1").c_str(),
-                machine_gun_samples, 0, machine_gun_samples,
-                channel_mg_y_bins, 0, 1024);
-            TH2D *hist2d_val2 = new TH2D(
-                ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val2").c_str(),
-                ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val2").c_str(),
-                machine_gun_samples, 0, machine_gun_samples,
-                channel_mg_y_bins, 0, 1024);
-            output_root->cd();
-            int mg_index = 0;
-            for (int _entry = 0; _entry < output_tree->GetEntries(); _entry++) {
-                output_tree->GetEntry(_entry);
-                if (*branch_fpga_id != _fpga_id) {
-                    continue;
-                }
-                for (int _mg_sample_index = 0; _mg_sample_index < machine_gun_samples; _mg_sample_index++) {
-                    hist2d_val0->Fill(mg_index, branch_val0_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
-                    hist2d_val1->Fill(mg_index, branch_val1_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
-                    hist2d_val2->Fill(mg_index, branch_val2_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
-                    mg_index++;
-                }
-            }
-            canvas->cd(_channel_index + 1);
-            hist2d_val0->GetXaxis()->SetTitle("Machine Gun Index");
-            hist2d_val0->GetYaxis()->SetTitle("ADC Value");
-            hist2d_val0->Draw("COLZ");
-        }
-        output_root->cd();
-        canvas->Write();
-    }
+    // int channel_mg_y_bins = 256 ;
+    // for (int _fpga_index = 0; _fpga_index < legal_fpga_id_list.size(); _fpga_index++) {
+    //     TCanvas *canvas = new TCanvas(
+    //         ("fpga" + std::to_string(legal_fpga_id_list[_fpga_index]) + "_canvas").c_str(),
+    //         ("FPGA" + std::to_string(legal_fpga_id_list[_fpga_index]) + " Canvas").c_str(),
+    //         1200, 800);
+    //     canvas->Divide(int(std::ceil(std::sqrt(FPGA_CHANNEL_NUMBER))), int(std::ceil(std::sqrt(FPGA_CHANNEL_NUMBER))));
+    //     auto _fpga_id = legal_fpga_id_list[_fpga_index];
+    //     for (int _channel_index = 0; _channel_index < FPGA_CHANNEL_NUMBER; _channel_index++) {
+    //         TH2D *hist2d_val0 = new TH2D(
+    //             ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val0").c_str(),
+    //             ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val0").c_str(),
+    //             machine_gun_samples, 0, machine_gun_samples,
+    //             channel_mg_y_bins, 0, 1024);
+    //         TH2D *hist2d_val1 = new TH2D(
+    //             ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val1").c_str(),
+    //             ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val1").c_str(),
+    //             machine_gun_samples, 0, machine_gun_samples,
+    //             channel_mg_y_bins, 0, 1024);
+    //         TH2D *hist2d_val2 = new TH2D(
+    //             ("fpga" + std::to_string(_fpga_id) + "_chn" + std::to_string(_channel_index) + "_val2").c_str(),
+    //             ("FPGA" + std::to_string(_fpga_id) + " Chn" + std::to_string(_channel_index) + " Val2").c_str(),
+    //             machine_gun_samples, 0, machine_gun_samples,
+    //             channel_mg_y_bins, 0, 1024);
+    //         output_root->cd();
+    //         int mg_index = 0;
+    //         for (int _entry = 0; _entry < output_tree->GetEntries(); _entry++) {
+    //             output_tree->GetEntry(_entry);
+    //             if (*branch_fpga_id != _fpga_id) {
+    //                 continue;
+    //             }
+    //             for (int _mg_sample_index = 0; _mg_sample_index < machine_gun_samples; _mg_sample_index++) {
+    //                 hist2d_val0->Fill(mg_index, branch_val0_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
+    //                 hist2d_val1->Fill(mg_index, branch_val1_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
+    //                 hist2d_val2->Fill(mg_index, branch_val2_list[_mg_sample_index * FPGA_CHANNEL_NUMBER + _channel_index]);
+    //                 mg_index++;
+    //             }
+    //         }
+    //         canvas->cd(_channel_index + 1);
+    //         hist2d_val0->GetXaxis()->SetTitle("Machine Gun Index");
+    //         hist2d_val0->GetYaxis()->SetTitle("ADC Value");
+    //         hist2d_val0->Draw("COLZ");
+    //     }
+    //     output_root->cd();
+    //     canvas->Write();
+    // }
 
     
 

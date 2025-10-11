@@ -73,6 +73,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(binparse)
 
+# --- Fetch nlohmann/json ---
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3   # or any stable release
+)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
 # ---- Build one exe per script ----
 set(SCRIPT_TARGETS)
 foreach(src IN LISTS SCRIPT_SOURCES)
@@ -80,12 +89,15 @@ foreach(src IN LISTS SCRIPT_SOURCES)
   add_executable(${exec_name} ${src})
 
   target_include_directories(${exec_name} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  # add include path
+  target_include_directories(${exec_name} PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
   target_link_libraries(${exec_name}
     PRIVATE
         cxxopts
         spdlog::spdlog
         binparse::binparse
+        nlohmann_json::nlohmann_json
         ROOT::Core ROOT::RIO ROOT::Hist ROOT::Tree ROOT::MathCore
         ROOT::Graf ROOT::Gpad
         Threads::Threads
