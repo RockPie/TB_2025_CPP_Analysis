@@ -11,7 +11,7 @@ DATA_DIRS   = ["data/beamtests", "data/labtests"]
 DUMP_DIR    = "dump"
 LOG_DIR     = "log"
 
-EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap"]
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis"]
 
 # ---- Discover valid (dtype, run) pairs ----
 pairs = []
@@ -23,14 +23,16 @@ for folder in DATA_DIRS:
         pairs.append({"dtype": dtype, "run": f.stem})
 
 # Final analysis targets (only for discovered runs)
-FINAL_TARGETS = [f"{DUMP_DIR}/103_HitMap/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TARGETS_HITMAP = [f"{DUMP_DIR}/103_HitMap/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TARGETS_ADC = [f"{DUMP_DIR}/104_ADC_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
 rule all:
     input:
         FINAL_EXES,
-        FINAL_TARGETS
+        FINAL_TARGETS_HITMAP,
+        FINAL_TARGETS_ADC
 
 # =========================
 # Build system integration
@@ -129,5 +131,21 @@ rule HitMap:
         r"""
         mkdir -p {DUMP_DIR}/103_HitMap/{wildcards.dtype}
         mkdir -p {LOG_DIR}/103_HitMap/{wildcards.dtype}
+        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        """
+
+# Stage 104: ADC_Analysis
+rule ADC_Analysis:
+    input:
+        exe     = f"{BIN_DIR}/104_ADC_Analysis",
+        root_in = f"{DUMP_DIR}/102_EventMatch/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/104_ADC_Analysis/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/104_ADC_Analysis/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/104_ADC_Analysis/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/104_ADC_Analysis/{wildcards.dtype}
         "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
         """

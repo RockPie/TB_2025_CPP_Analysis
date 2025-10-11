@@ -1,4 +1,5 @@
 #include <fstream>
+#include <string>
 #include "H2GCROC_Common.hxx"
 
 
@@ -45,7 +46,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // dump/102_EventMatch/beamtests/RunXXXX.root
     script_input_file  = parsed["file"].as<std::string>();
+    std::string script_input_run_number = script_input_file.substr(script_input_file.find_last_of("Run") + 1).append(4, '0').substr(0, 4);
     script_output_file = parsed["output"].as<std::string>();
     script_n_events    = parsed["events"].as<int>();
     script_verbose     = parsed["verbose"].as<bool>();
@@ -174,9 +177,32 @@ int main(int argc, char **argv) {
     // // no title for the histogram
     // heat_map->SetTitle("");
 
+    TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
+    pedestal_distribution_th2d->SetStats(0);
+    pedestal_distribution_th2d->SetTitle("");
+
+    TH2D* peak_distribution_th2d = new TH2D("peak_distribution", "Peak Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 1024);
+    peak_distribution_th2d->SetStats(0);
+    peak_distribution_th2d->SetTitle("");
+
+    // if events are more than 10k, make 10 histograms each for 1/10 of the events
+    // if events are more than 1k, make 5 histograms each for 1/5 of the events
+    // other wise make 2 histograms
+    int n_partial_hist = 0;
+    if (entry_max > 10000) {
+        n_partial_hist = 10;
+    } else if (entry_max > 1000) {
+        n_partial_hist = 5;
+    } else {
+        n_partial_hist = 2;
+    }
+
+    std::vector<double> event_adc_sum_list;
+    event_adc_sum_list.reserve(entry_max);
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
+        double adc_sum_all = 0;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
@@ -197,36 +223,71 @@ int main(int argc, char **argv) {
                 else if (channel_index_in_h2g_half > 0)
                     channel_index_no_CM_Calib -= 1;
 
-                // if (channel_index_no_CM_Calib % 8 == 0)
-                //     continue;
+                int channel_number_valid = asic_id * 72 + half_id * 36 + (channel_index_no_CM_Calib);
 
-                // std::string chn_key = std::to_string(channel_index_no_CM_Calib);
-                // int col = -1, row = -1;
-                // if (sipm_board.contains(chn_key)) {
-                //     col = sipm_board.at(chn_key).at("col").get<int>();
-                //     row = sipm_board.at(chn_key).at("row").get<int>();
-                // }
-
+                // pedestal to be the average of the smallest 2 of the first 4 samples
                 UInt_t adc_pedestal = 1024;
+                std::vector<UInt_t> adc_samples;
                 UInt_t adc_peak = 0;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
-                    if (sample == 0) {
-                        adc_pedestal = adc;
-                    }
+                    adc_samples.push_back(adc);
                     if (adc > adc_peak) {
                         adc_peak = adc;
                     }
                 }
-                auto adc_subtracted = int(adc_peak) - int(adc_pedestal);
+                std::sort(adc_samples.begin(), adc_samples.end());
+                adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
+
+                auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
+
+                pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
+                peak_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
+
+                adc_sum_all += adc_peak_subtracted;
 
                 // // fill the heatmap with the adc_subtracted value
                 // if (uni_col >= 0 && uni_col < heat_map_x_bins && uni_row >= 0 && uni_row < heat_map_y_bins) {
                 //     heat_map->Fill(uni_col + 0.5, uni_row + 0.5, adc_subtracted);
                 // }
                 // // spdlog::info("VLDB {} Channel {} ADC Pedestal {} Peak {} Subtracted {}", vldb_id, channel, adc_pedestal, adc_peak, adc_subtracted);
-            }
-        }
+            } // end of channel loop
+        } // end of vldb loop
+        event_adc_sum_list.push_back(adc_sum_all);
+    } // end of event loop
+
+    // calculate the 90% max of all adc sums
+    // sort the adc sums
+    if (event_adc_sum_list.empty()) {
+        spdlog::warn("No events processed, using default ADC sum range.");
+        event_adc_sum_list.push_back(0.0);
+    }
+    std::sort(event_adc_sum_list.begin(), event_adc_sum_list.end());
+    // get the 90% max
+
+    double adc_sum_max = event_adc_sum_list[std::min(static_cast<size_t>(event_adc_sum_list.size() * 0.9), event_adc_sum_list.size() - 1)];
+    adc_sum_max = adc_sum_max * 1.1; // add 10% margin
+    // make 10 histograms each for 1/10 of the events
+    std::vector<TH1D*> run_adc_sum_partial_hist1d_list;
+
+    spdlog::info("ADC sum max: {}", adc_sum_max);
+
+    TH1D* run_adc_sum_all_hist1d = new TH1D("run_adc_sum_all", "Run ADC Sum All;ADC Sum;Counts", 256, 0, adc_sum_max);
+    run_adc_sum_all_hist1d->SetStats(0);
+    run_adc_sum_all_hist1d->SetTitle("");
+
+    for (int i = 0; i < n_partial_hist; i++) {
+        auto hist = new TH1D(("run_adc_sum_partial_" + std::to_string(i)).c_str(), ("Run ADC Sum Partial " + std::to_string(i) + ";""ADC Sum;Counts").c_str(), 256, 0, adc_sum_max);
+        hist->SetStats(0);
+        hist->SetTitle("");
+        run_adc_sum_partial_hist1d_list.push_back(hist);
+    }
+
+    for (size_t i = 0; i < event_adc_sum_list.size(); i++) {
+        auto& adc_sum = event_adc_sum_list[i];
+        run_adc_sum_all_hist1d->Fill(adc_sum);
+        int partial_hist_index = i * n_partial_hist / event_adc_sum_list.size();
+        run_adc_sum_partial_hist1d_list[partial_hist_index]->Fill(adc_sum);
     }
 
     auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
@@ -234,43 +295,89 @@ int main(int argc, char **argv) {
         spdlog::error("Failed to create output file {}", script_output_file);
         return 1;
     }
+
+    std::string annotation_canvas_title = CANVAS_TITLE;
+    std::string annotation_testbeam_title = TESTBEAM_TITLE;
     output_root->cd();
-    // TCanvas *c1 = new TCanvas("c1", "c1", 800, 800);
-    // heat_map->SetStats(0);
-    // heat_map->Draw("COLZ");
-    
-    // // remove stat box
-    // c1->SetFrameFillColor(0);
-    // c1->SetFrameBorderSize(0);
-    // c1->SetBorderSize(0);
-    // c1->SetTickx(0);
-    // c1->SetTicky(0);
-    // c1->Update();
 
-    // // write annotation
-    // TLatex latex;
-    // latex.SetTextColor(kGray+2);
-    // latex.SetNDC();
-    // std::string annotation_canvas_title = CANVAS_TITLE;
-    // std::string annotation_testbeam_title = TESTBEAM_TITLE;
+    TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
+    pedestal_distribution_th2d->Draw("COLZ");
+    pedestal_distribution_th2d_canvas->SetLogz();
 
-    // latex.SetTextSize(0.05);
-    // latex.SetTextFont(62);
-    // latex.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    TLatex latex_pedestal;
+    latex_pedestal.SetTextColor(kGray+2);
+    latex_pedestal.SetNDC();
+    latex_pedestal.SetTextSize(0.05);
+    latex_pedestal.SetTextFont(62);
+    latex_pedestal.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    latex_pedestal.SetTextSize(0.035);
+    latex_pedestal.SetTextFont(42);
+    latex_pedestal.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // write run number, date time
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    std::ostringstream date_stream;
+    date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    latex_pedestal.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    latex_pedestal.DrawLatex(0.12, 0.72, "Pedestal Distribution");
+    latex_pedestal.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    pedestal_distribution_th2d_canvas->Write();
+    pedestal_distribution_th2d_canvas->Close();
 
-    // latex.SetTextSize(0.04);
-    // latex.SetTextFont(42);
-    // latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // // write run number, date time
-    
-    // auto t = std::time(nullptr);
-    // auto tm = *std::localtime(&t);
-    // std::ostringstream date_stream;
-    // date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    // latex.DrawLatex(0.12, 0.76, ("Run " + std::to_string(0)).c_str());
-    // latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
+    TCanvas *peak_distribution_th2d_canvas = new TCanvas("peak_distribution_canvas", "peak_distribution_canvas", 1200, 600);
+    peak_distribution_th2d->Draw("COLZ");
+    peak_distribution_th2d_canvas->SetLogz();
+    TLatex latex_peak;
+    latex_peak.SetTextColor(kGray+2);
+    latex_peak.SetNDC();
+    latex_peak.SetTextSize(0.05);
+    latex_peak.SetTextFont(62);
+    latex_peak.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    latex_peak.SetTextSize(0.035);
+    latex_peak.SetTextFont(42);
+    latex_peak.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // write run number, date time
+    latex_peak.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    latex_peak.DrawLatex(0.12, 0.72, "Peak Distribution");
+    latex_peak.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    peak_distribution_th2d_canvas->Write();
+    peak_distribution_th2d_canvas->Close();
 
-    // c1->Write();
+    TCanvas *run_adc_sum_canvas = new TCanvas("run_adc_sum_all_canvas", "run_adc_sum_all_canvas", 800, 600);
+    // draw all the partial histograms in one canvas
+    run_adc_sum_all_hist1d->SetLineColor(kBlack);
+    run_adc_sum_all_hist1d->SetLineWidth(2);
+    run_adc_sum_all_hist1d->Draw("HIST");
+    TLegend *run_adc_sum_legend = new TLegend(0.80, 0.65, 0.89, 0.89);
+    run_adc_sum_legend->SetBorderSize(0);
+    run_adc_sum_legend->SetFillStyle(0);
+    run_adc_sum_legend->SetTextFont(42);
+    run_adc_sum_legend->SetTextSize(0.02);
+    run_adc_sum_legend->AddEntry(run_adc_sum_all_hist1d, "All Events", "l");
+
+    for (int i = 0; i < n_partial_hist; i++) {
+        auto hist = run_adc_sum_partial_hist1d_list[i];
+        hist->SetLineColor(kBlue + i * 2);
+        hist->SetLineWidth(1);
+        hist->Draw("HIST SAME");
+        run_adc_sum_legend->AddEntry(hist, ("Partial " + std::to_string(i)).c_str(), "l");
+    }
+    run_adc_sum_legend->Draw();
+    TLatex latex_run_adc_sum;
+    latex_run_adc_sum.SetTextColor(kGray+2);
+    latex_run_adc_sum.SetNDC();
+    latex_run_adc_sum.SetTextSize(0.05);
+    latex_run_adc_sum.SetTextFont(62);
+    latex_run_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    latex_run_adc_sum.SetTextSize(0.035);
+    latex_run_adc_sum.SetTextFont(42);
+    latex_run_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // write run number, date time
+    latex_run_adc_sum.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    latex_run_adc_sum.DrawLatex(0.12, 0.72, "Run ADC Sum");
+    latex_run_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    run_adc_sum_canvas->Write();
+    run_adc_sum_canvas->Close();
 
     output_root->Close();
 

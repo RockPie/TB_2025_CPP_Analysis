@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
 
     configure_logger(false);
     
-    cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
+    cxxopts::Options options(script_name, "Generate hitmaps from machine gun data");
 
     options.add_options()
         ("f,file", "Input .root file", cxxopts::value<std::string>())
@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
     }
 
     script_input_file  = parsed["file"].as<std::string>();
+    std::string script_input_run_number = script_input_file.substr(script_input_file.find_last_of("Run") + 1).append(4, '0').substr(0, 4);
     script_output_file = parsed["output"].as<std::string>();
     script_n_events    = parsed["events"].as<int>();
     script_verbose     = parsed["verbose"].as<bool>();
@@ -165,14 +166,14 @@ int main(int argc, char **argv) {
         last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
     }
 
-    // create hist2d for heatmap
+    // create hist2d for hitmap
     const int board_cols = 8;
     const int board_rows = 4;
-    int heat_map_x_bins = 16;
-    int heat_map_y_bins = 12;
-    TH2D* heat_map = new TH2D("", "Heat Map;X;Y;Counts", heat_map_x_bins, 0, heat_map_x_bins, heat_map_y_bins, 0, heat_map_y_bins);
+    int hit_map_x_bins = 16;
+    int hit_map_y_bins = 12;
+    TH2D* hit_map = new TH2D("", "Hit Map;X;Y;Counts", hit_map_x_bins, 0, hit_map_x_bins, hit_map_y_bins, 0, hit_map_y_bins);
     // no title for the histogram
-    heat_map->SetTitle("");
+    hit_map->SetTitle("");
 
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
@@ -247,9 +248,9 @@ int main(int argc, char **argv) {
                 }
                 auto adc_subtracted = int(adc_peak) - int(adc_pedestal);
 
-                // fill the heatmap with the adc_subtracted value
-                if (uni_col >= 0 && uni_col < heat_map_x_bins && uni_row >= 0 && uni_row < heat_map_y_bins) {
-                    heat_map->Fill(uni_col + 0.5, uni_row + 0.5, adc_subtracted);
+                // fill the hitmap with the adc_subtracted value
+                if (uni_col >= 0 && uni_col < hit_map_x_bins && uni_row >= 0 && uni_row < hit_map_y_bins) {
+                    hit_map->Fill(uni_col + 0.5, uni_row + 0.5, adc_subtracted);
                 }
                 // spdlog::info("VLDB {} Channel {} ADC Pedestal {} Peak {} Subtracted {}", vldb_id, channel, adc_pedestal, adc_peak, adc_subtracted);
             }
@@ -263,8 +264,8 @@ int main(int argc, char **argv) {
     }
     output_root->cd();
     TCanvas *c1 = new TCanvas("c1", "c1", 800, 800);
-    heat_map->SetStats(0);
-    heat_map->Draw("COLZ");
+    hit_map->SetStats(0);
+    hit_map->Draw("COLZ");
     
     // remove stat box
     c1->SetFrameFillColor(0);
@@ -294,7 +295,7 @@ int main(int argc, char **argv) {
     auto tm = *std::localtime(&t);
     std::ostringstream date_stream;
     date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    latex.DrawLatex(0.12, 0.76, ("Run " + std::to_string(0)).c_str());
+    latex.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
     latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
 
     c1->Write();
