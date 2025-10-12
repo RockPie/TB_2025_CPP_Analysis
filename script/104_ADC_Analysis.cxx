@@ -2,8 +2,6 @@
 #include <string>
 #include "H2GCROC_Common.hxx"
 
-
-
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
     std::string script_input_file, script_output_file;
@@ -138,6 +136,18 @@ int main(int argc, char **argv) {
 
     spdlog::info("Processing {} events", entry_max);
 
+    if (entry_max < 1) {
+        spdlog::error("No events to process");
+        // create empty output file
+        auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
+        if (output_root->IsZombie()) {
+            spdlog::error("Failed to create output file {}", script_output_file);
+            return 1;
+        }
+        output_root->Close();
+        return 1;
+    }
+
     for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
         auto *branch_timestamps = new ULong64_t[machine_gun_samples];  // 64 bits
         auto *branch_daqh_list  = new UInt_t[4 * machine_gun_samples];    // 32 bits
@@ -168,15 +178,6 @@ int main(int argc, char **argv) {
         last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
     }
 
-    // // create hist2d for heatmap
-    // const int board_cols = 8;
-    // const int board_rows = 4;
-    // int heat_map_x_bins = 16;
-    // int heat_map_y_bins = 12;
-    // TH2D* heat_map = new TH2D("", "Heat Map;X;Y;Counts", heat_map_x_bins, 0, heat_map_x_bins, heat_map_y_bins, 0, heat_map_y_bins);
-    // // no title for the histogram
-    // heat_map->SetTitle("");
-
     TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
     pedestal_distribution_th2d->SetStats(0);
     pedestal_distribution_th2d->SetTitle("");
@@ -188,16 +189,18 @@ int main(int argc, char **argv) {
     // if events are more than 10k, make 10 histograms each for 1/10 of the events
     // if events are more than 1k, make 5 histograms each for 1/5 of the events
     // other wise make 2 histograms
-    int n_partial_hist = 0;
-    if (entry_max > 10000) {
+    int n_partial_hist = 2;
+    if (entry_max > 100000) {
         n_partial_hist = 10;
-    } else if (entry_max > 1000) {
+    } else if (entry_max > 10000) {
         n_partial_hist = 5;
     } else {
         n_partial_hist = 2;
     }
 
     std::vector<double> event_adc_sum_list;
+    event_adc_sum_list.reserve(entry_max);
+    std::vector<double> event_adc_sum_list_copy;
     event_adc_sum_list.reserve(entry_max);
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
@@ -210,6 +213,9 @@ int main(int argc, char **argv) {
                 int channel_index_in_h2g_half = channel_index_in_h2g % 38;
                 int asic_id = channel / 76;
                 int half_id = channel_index_in_h2g / 38;
+
+                if (vldb_id == 0 && asic_id == 1)
+                    continue;
                 
                 if (channel_index_in_h2g_half == 19)
                     continue;
@@ -240,20 +246,18 @@ int main(int argc, char **argv) {
                 adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
 
                 auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
+                if (adc_peak_subtracted < 0) {
+                    adc_peak_subtracted = 0;
+                }
 
                 pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
                 peak_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
 
                 adc_sum_all += adc_peak_subtracted;
-
-                // // fill the heatmap with the adc_subtracted value
-                // if (uni_col >= 0 && uni_col < heat_map_x_bins && uni_row >= 0 && uni_row < heat_map_y_bins) {
-                //     heat_map->Fill(uni_col + 0.5, uni_row + 0.5, adc_subtracted);
-                // }
-                // // spdlog::info("VLDB {} Channel {} ADC Pedestal {} Peak {} Subtracted {}", vldb_id, channel, adc_pedestal, adc_peak, adc_subtracted);
             } // end of channel loop
         } // end of vldb loop
         event_adc_sum_list.push_back(adc_sum_all);
+        event_adc_sum_list_copy.push_back(adc_sum_all);
     } // end of event loop
 
     // calculate the 90% max of all adc sums
@@ -266,7 +270,7 @@ int main(int argc, char **argv) {
     // get the 90% max
 
     double adc_sum_max = event_adc_sum_list[std::min(static_cast<size_t>(event_adc_sum_list.size() * 0.9), event_adc_sum_list.size() - 1)];
-    adc_sum_max = adc_sum_max * 1.1; // add 10% margin
+    adc_sum_max = adc_sum_max * 1.3; // add 30% margin
     // make 10 histograms each for 1/10 of the events
     std::vector<TH1D*> run_adc_sum_partial_hist1d_list;
 
@@ -284,10 +288,69 @@ int main(int argc, char **argv) {
     }
 
     for (size_t i = 0; i < event_adc_sum_list.size(); i++) {
-        auto& adc_sum = event_adc_sum_list[i];
+        auto& adc_sum = event_adc_sum_list_copy[i];
         run_adc_sum_all_hist1d->Fill(adc_sum);
         int partial_hist_index = i * n_partial_hist / event_adc_sum_list.size();
         run_adc_sum_partial_hist1d_list[partial_hist_index]->Fill(adc_sum);
+    }
+
+    double pre_fit_mean = run_adc_sum_all_hist1d->GetMean();
+    double pre_fit_sigma = run_adc_sum_all_hist1d->GetRMS();
+    double fit_min = std::max(0.0, pre_fit_mean - 2 * pre_fit_sigma);
+    double fit_max = std::min(adc_sum_max, pre_fit_mean + 2 * pre_fit_sigma);
+
+    TF1* gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
+    run_adc_sum_all_hist1d->Fit(gaus_fit_pre, "RQ");
+
+    double fit_mean = gaus_fit_pre->GetParameter(1);
+    double fit_sigma = gaus_fit_pre->GetParameter(2);
+
+    std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
+    std::vector<double> fit_offsets = {-0.2, 0.0, 0.2};
+    std::vector<double> fit_results_means;
+    std::vector<double> fit_results_sigmas;
+    for (auto fit_sigma_multiplier : fit_sigmas) {
+        for (auto fit_offset_multiplier : fit_offsets) {
+            double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+            double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+            TF1* gaus_fit_final = new TF1(("gaus_fit_final_" + std::to_string(static_cast<int>(fit_sigma_multiplier * 10)) + "_" + std::to_string(static_cast<int>(fit_offset_multiplier * 10))).c_str(), "gaus", fit_min_final, fit_max_final);
+            // set transparency
+            gaus_fit_final->SetLineColorAlpha(kPink, 0.2);
+            run_adc_sum_all_hist1d->Fit(gaus_fit_final, "RQ+");
+            double final_fit_mean = gaus_fit_final->GetParameter(1);
+            double final_fit_sigma = gaus_fit_final->GetParameter(2);
+            fit_results_means.push_back(final_fit_mean);
+            fit_results_sigmas.push_back(final_fit_sigma);
+            spdlog::info("Final Fit with sigma range {} and offset {}: mean = {}, sigma = {}", fit_sigma_multiplier, fit_offset_multiplier, final_fit_mean, final_fit_sigma);
+        }
+    }
+
+    // calculate the average of the fit results
+    double final_mean = 0.0;
+    double final_sigma = 0.0;
+    double final_mean_error = 0.0;
+    double final_sigma_error = 0.0;
+    if (!fit_results_means.empty()) {
+        final_mean = std::accumulate(fit_results_means.begin(), fit_results_means.end(), 0.0) / fit_results_means.size();
+        final_sigma = std::accumulate(fit_results_sigmas.begin(), fit_results_sigmas.end(), 0.0) / fit_results_sigmas.size();
+    } else {
+        final_mean = fit_mean;
+        final_sigma = fit_sigma;
+    }
+    if (fit_results_means.size() > 1) {
+        double mean_variance = 0.0;
+        double sigma_variance = 0.0;
+        for (size_t i = 0; i < fit_results_means.size(); i++) {
+            mean_variance += (fit_results_means[i] - final_mean) * (fit_results_means[i] - final_mean);
+            sigma_variance += (fit_results_sigmas[i] - final_sigma) * (fit_results_sigmas[i] - final_sigma);
+        }
+        mean_variance /= (fit_results_means.size() - 1);
+        sigma_variance /= (fit_results_sigmas.size() - 1);
+        final_mean_error = std::sqrt(mean_variance / fit_results_means.size());
+        final_sigma_error = std::sqrt(sigma_variance / fit_results_sigmas.size());
+    } else {
+        final_mean_error = gaus_fit_pre->GetParError(1);
+        final_sigma_error = gaus_fit_pre->GetParError(2);
     }
 
     auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
@@ -363,6 +426,18 @@ int main(int argc, char **argv) {
         run_adc_sum_legend->AddEntry(hist, ("Partial " + std::to_string(i)).c_str(), "l");
     }
     run_adc_sum_legend->Draw();
+    TLatex latex_fit;
+    latex_fit.SetTextColor(kRed);
+    latex_fit.SetNDC();
+    latex_fit.SetTextSize(0.03);
+    latex_fit.SetTextFont(42);
+    latex_fit.DrawLatex(0.60, 0.60, ("Fit Mean: " + std::to_string(final_mean)).c_str());
+    latex_fit.DrawLatex(
+        0.60, 0.55, 
+        ("Fit Sigma: " + std::to_string(final_sigma) + 
+        " (" + std::to_string(static_cast<int>(final_sigma / final_mean * 10000) / 100.0) + "%)").c_str()
+    );
+    // write run number
     TLatex latex_run_adc_sum;
     latex_run_adc_sum.SetTextColor(kGray+2);
     latex_run_adc_sum.SetNDC();

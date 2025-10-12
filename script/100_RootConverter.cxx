@@ -150,9 +150,9 @@ bool parse_160byte_frame(std::vector<std::vector<uint32_t>>& _frame_words, std::
 }
 
 void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, int _verbose=0) {
-    if (true) {
-        spdlog::info("Trg {}: bx=0x{:03X}, ob=0x{:03X}", (int)_trg_index, _line.bx_cnt, _line.ob_cnt);
-    }
+    // if (true) {
+    //     spdlog::info("Trg {}: bx=0x{:03X}, ob=0x{:03X}", (int)_trg_index, _line.bx_cnt, _line.ob_cnt);
+    // }
     auto& trg_bx = _line.bx_cnt;
     auto& trg_ob = _line.ob_cnt;
     const int timestamp_diff_mg               = 41;
@@ -230,10 +230,10 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                         current_lead_data_timestamp = data_timestamp;
                         auto first_data_shift = data_timestamp - trg_timestamp;
                         first_mg_flag = true;
-                        if (true) {
-                            spdlog::info("  First: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, first_data_shift={}",
-                                         (int)data_line.header_vldb_id, data_bx, data_ob, first_data_shift);
-                        }
+                        // if (true) {
+                        //     spdlog::info("  First: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, first_data_shift={}",
+                        //                  (int)data_line.header_vldb_id, data_bx, data_ob, first_data_shift);
+                        // }
                     } else {
                         first_mg_flag = false;
                         skip_line_mask = false;
@@ -250,10 +250,10 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                             }
                             _n_trigger_header_ts_error++;
                             // print the bx and ob in hex
-                            if (true) {
-                                spdlog::info("  (b)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
-                                             (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
-                            }
+                            // if (true) {
+                            //     spdlog::info("  (b)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
+                            //                  (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
+                            // }
                             continue;   
                         } else {
                             machinegun_index = std::round(static_cast<double>(header_shift) / timestamp_diff_mg);
@@ -261,10 +261,10 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                             if (machinegun_index > max_machinegun_index) {
                                 max_machinegun_index = 16;
                             }
-                            if (true) {
-                                spdlog::info("  (g)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
-                                             (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
-                            }
+                            // if (true) {
+                            //     spdlog::info("  (g)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
+                            //                  (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
+                            // }
                             if (_verbose >= VERBOSE_LEVEL_INFO) {
                                 spdlog::info("    Info: header_shift={} corresponds to machinegun index {}",
                                              header_shift, machinegun_index);
@@ -396,8 +396,8 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
             } // end of processing one data line
         } // end of for each data line loop
         
-        spdlog::info("  Finished processing trigger, total data lines: {}, legal samples: {}, 40-line errors: {}, 160-byte errors: {}, header timestamp errors: {}, max mg index: {}, idle lines: {}, skipped lines: {}, L1A sent: {}",
-                     _data_lines.size(), _n_legal_samples, _n_trigger_40line_error, _n_trigger_160byte_error, _n_trigger_header_ts_error, max_machinegun_index, idle_line_cnt, line_skipped_cnt, L1A_cmd_counter);
+        // spdlog::info("  Finished processing trigger, total data lines: {}, legal samples: {}, 40-line errors: {}, 160-byte errors: {}, header timestamp errors: {}, max mg index: {}, idle lines: {}, skipped lines: {}, L1A sent: {}",
+        //              _data_lines.size(), _n_legal_samples, _n_trigger_40line_error, _n_trigger_160byte_error, _n_trigger_header_ts_error, max_machinegun_index, idle_line_cnt, line_skipped_cnt, L1A_cmd_counter);
         _data_lines.clear();
     } // for each vldb+
 }
@@ -493,9 +493,9 @@ int main(int argc, char** argv) {
     // * ----------------------------------------------------------------------
 
     bp::TailOptions opts;
-    opts.poll_ms = 50;                 // check for new data every 50 ms
+    opts.poll_ms = 1;                 // check for new data every 1 ms
     opts.read_chunk = 1u << 20;        // 1 MB read chunk
-    opts.inactivity_timeout_ms = 1000; // exit if no new data for 1 second
+    opts.inactivity_timeout_ms = 10000; // exit if no new data for 1 second
 
     // --- data qc variables ---
     bool qc_rdh0_found = false;

@@ -1,5 +1,7 @@
 # Snakefile
 from pathlib import Path
+import json
+import os
 
 shell.executable("/bin/bash")
 
@@ -10,6 +12,20 @@ BIN_DIR     = f"{BUILD_DIR}/bin/scripts"
 DATA_DIRS   = ["data/beamtests", "data/labtests"]
 DUMP_DIR    = "dump"
 LOG_DIR     = "log"
+
+EOS_BASE = "/eos/experiment/alice/focal/tb2025_Oct_SPS/FoCalH/data"
+EOS_DIRS = {
+    "beamtests": f"{EOS_BASE}/beam",
+    "labtests":  f"{EOS_BASE}/lab"
+}
+# ---- Load lxplus credentials (username/password in JSON) ----
+CRED_FILE = "config/lxplus.json"
+if not Path(CRED_FILE).exists():
+    print(f"[WARN] Missing {CRED_FILE}. 'fetch_ch2g' rule will fail until you create it.")
+
+def _creds():
+    with open(CRED_FILE, "r") as fh:
+        return json.load(fh)
 
 EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis"]
 
@@ -37,6 +53,86 @@ rule all:
 # =========================
 # Build system integration
 # =========================
+rule fetch_ch2g:
+    output:
+        local = "data/{dtype}/{run}.ch2g"
+    params:
+        remote = lambda wc: f"{EOS_DIRS[wc.dtype]}/{wc.run}.ch2g",
+        cred   = "config/lxplus.json",
+        user   = lambda wc: _creds().get("user", ""),
+        host   = lambda wc: _creds().get("host", "lxplus.cern.ch"),
+        realm  = "CERN.CH"
+    log:
+        "log/fetch/{dtype}/{run}.log"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p data/{wildcards.dtype} log/fetch/{wildcards.dtype}
+
+        # Skip if already present and non-empty
+        if [ -s "{output.local}" ]; then
+          echo "[fetch] Exists: {output.local}" > "{log}"
+          exit 0
+        fi
+
+        echo "[fetch] Remote: {params.user}@{params.host}:{params.remote}" > "{log}"
+
+        have_ticket=false
+        if klist -s 2>/dev/null; then
+          have_ticket=true
+          echo "[fetch] Kerberos ticket found." >> "{log}"
+        else
+          echo "[fetch] No Kerberos ticket. Attempting non-interactive kinit..." >> "{log}"
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "[fetch][ERROR] jq not installed; cannot read {params.cred}" >> "{log}"
+            exit 3
+          fi
+          PW=$(jq -r '.password' "{params.cred}")
+          if [ -z "$PW" ] || [ "$PW" = "null" ]; then
+            echo "[fetch][ERROR] No password in {params.cred}" >> "{log}"
+            exit 4
+          fi
+
+          # Perform kinit non-interactively (no password printed)
+          if printf '%s\n' "$PW" | kinit "{params.user}@{params.realm}" >> "{log}" 2>&1; then
+            have_ticket=true
+            echo "[fetch] kinit succeeded." >> "{log}"
+          else
+            echo "[fetch][ERROR] kinit failed. Check username/password or MFA policy." >> "{log}"
+            have_ticket=false
+          fi
+        fi
+
+        if [ "$have_ticket" = true ]; then
+          # Use Kerberos-auth scp (no password prompt)
+          scp -o GSSAPIAuthentication=yes \
+              -o PreferredAuthentications=gssapi-with-mic \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              {params.user}@{params.host}:"{params.remote}" "{output.local}" \
+              >> "{log}" 2>&1 || true
+        else
+          echo "[fetch] No Kerberos available. Trying sshpass as last resort..." >> "{log}"
+          if command -v sshpass >/dev/null 2>&1; then
+            PW=$(jq -r '.password' "{params.cred}")
+            sshpass -p "$PW" \
+              scp -o PreferredAuthentications=password \
+                  -o PubkeyAuthentication=no \
+                  -o NumberOfPasswordPrompts=1 \
+                  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                  {params.user}@{params.host}:"{params.remote}" "{output.local}" \
+              >> "{log}" 2>&1 || true
+          else
+            echo "[fetch][ERROR] sshpass not installed and Kerberos unavailable." >> "{log}"
+          fi
+        fi
+
+        if [ ! -s "{output.local}" ]; then
+          echo "[fetch][ERROR] Download failed." >> "{log}"
+          exit 2
+        fi
+        echo "[fetch] OK -> {output.local}" >> "{log}"
+        """
+
 
 # Configure CMake once (stamp file)
 rule cmake_configure:
@@ -83,7 +179,7 @@ rule RootConverter:
         r"""
         mkdir -p {DUMP_DIR}/100_RootConverter/{wildcards.dtype}
         mkdir -p {LOG_DIR}/100_RootConverter/{wildcards.dtype}
-        "{input.exe}" -i "{input.ch2g}" -o "{output.root}" > "{log}" 2>&1
+        {input.exe} -i {input.ch2g} -o {output.root} > {log} 2>&1
         """
 
 # Stage 101: EventRecon
@@ -99,7 +195,7 @@ rule EventRecon:
         r"""
         mkdir -p {DUMP_DIR}/101_EventRecon/{wildcards.dtype}
         mkdir -p {LOG_DIR}/101_EventRecon/{wildcards.dtype}
-        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """
 
 # Stage 102: EventMatch
@@ -115,7 +211,7 @@ rule EventMatch:
         r"""
         mkdir -p {DUMP_DIR}/102_EventMatch/{wildcards.dtype}
         mkdir -p {LOG_DIR}/102_EventMatch/{wildcards.dtype}
-        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """
 
 # Stage 103: HitMap
@@ -131,7 +227,7 @@ rule HitMap:
         r"""
         mkdir -p {DUMP_DIR}/103_HitMap/{wildcards.dtype}
         mkdir -p {LOG_DIR}/103_HitMap/{wildcards.dtype}
-        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """
 
 # Stage 104: ADC_Analysis
@@ -147,5 +243,5 @@ rule ADC_Analysis:
         r"""
         mkdir -p {DUMP_DIR}/104_ADC_Analysis/{wildcards.dtype}
         mkdir -p {LOG_DIR}/104_ADC_Analysis/{wildcards.dtype}
-        "{input.exe}" -f "{input.root_in}" -o "{output.root_out}" > "{log}" 2>&1
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """

@@ -10,6 +10,7 @@
 ._*
 CMakeCache.txt
 .zshrc_local
+config/lxplus.json
 
 # ignore dump folder
 dump/
