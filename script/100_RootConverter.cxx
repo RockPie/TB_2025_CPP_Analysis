@@ -149,7 +149,7 @@ bool parse_160byte_frame(std::vector<std::vector<uint32_t>>& _frame_words, std::
 
 }
 
-void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, int _verbose=0) {
+void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, ULong64_t _recent_trig_line_timestamp, int _verbose=0) {
     // if (true) {
     //     spdlog::info("Trg {}: bx=0x{:03X}, ob=0x{:03X}", (int)_trg_index, _line.bx_cnt, _line.ob_cnt);
     // }
@@ -241,6 +241,8 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                         auto header_shift = data_timestamp - first_valid_data_timestamp;
                         current_lead_data_timestamp = data_timestamp;
                         int diff_mg = header_shift % timestamp_diff_mg;
+                        // TODO: now forcing diff_mg to 0
+                        diff_mg = 0;
                         if (diff_mg > timestamp_diff_mg_tolerance || diff_mg < -timestamp_diff_mg_tolerance) {
                             if (_verbose >= VERBOSE_LEVEL_WARN) {
                                 spdlog::warn("    Warning: header_shift={}, current_lead_data_timestamp=0x{:08X}, first_valid_data_timestamp=0x{:08X} differs from expected mg multiple (mg {})",
@@ -312,10 +314,16 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                 frame_words[3].push_back(data_line.data_word3);
                 frame_words[4].push_back(data_line.data_word4);
                 frame_words[5].push_back(data_line.data_word5);
+                // print the bx and ob and timestamp
+                // if (true) {
+                //     spdlog::info("    Data line {}: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, timestamp=0x{:08X}", line_candidate_counter, (int)data_line.header_vldb_id, data_bx, data_ob, data_timestamp);
+                // }
                     if (line_candidate_counter >= 40) {
                         // give up looking for header
                         auto last_data_shift = data_timestamp - current_lead_data_timestamp;
                         auto diff_sample = std::abs(static_cast<int>(last_data_shift) - timestamp_diff_sample);
+                        // TODO: bypass the 40 check
+                        diff_sample = 0;
                         if (diff_sample > timestamp_diff_sample_tolerance) {
                             if (first_mg_flag){
                                 // if this is the first mg, do not count as error
@@ -358,7 +366,9 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                                 // }
                                 // fill branches
                                 *(_branch_fpga_id) = fpga_id;
-                                *(_branch_timestamp) = data_timestamp;
+                                // *(_branch_timestamp) = data_timestamp;
+                                // TODO: use the recent trigger timestamp
+                                *(_branch_timestamp) = _recent_trig_line_timestamp;
                                 for (int i = 0; i < 4; i++) {
                                     *(_branch_daqh_list + i) = daqh_list[i];
                                     *(_branch_crc32_list + i) = crc_list[i];
@@ -522,6 +532,10 @@ int main(int argc, char** argv) {
     const uint32_t L1A_pattern  = 0x4B00004B;
     auto t_start = std::chrono::steady_clock::now();
 
+    ULong64_t recent_trig_line_timestamp = 0;
+
+
+
     // std::vector<std::vector<uint32_t>> vldb_timestamps(n_vldb);
     std::vector<std::vector<bp::DataLine>> vldb_data_lines_buffer(n_vldb);
     // set of vldb id
@@ -591,6 +605,9 @@ int main(int argc, char** argv) {
         [&](const bp::TrgLine& line, std::span<const std::byte> raw){
             (void)line; (void)raw;
             n_trg_lines++;
+            auto &orbit_id = line.ob_cnt;
+            auto &bc_id    = line.bx_cnt;
+            recent_trig_line_timestamp = (static_cast<uint64_t>(orbit_id) * BX_PER_ORBIT) + bc_id;
             
             // auto &trg_bx_id = line.bx_cnt;
             // auto &trg_orbit_id = line.ob_cnt;
@@ -613,7 +630,7 @@ int main(int argc, char** argv) {
                 trigger_data_processing(const_cast<bp::TrgLine&>(last_trg_line), vldb_data_lines_buffer, n_trg_lines, 
                                         branch_fpga_id, branch_timestamp, branch_daqh_list, branch_tc_list, branch_tp_list,
                                         branch_val0_list, branch_val1_list, branch_val2_list, branch_crc32_list, branch_last_heartbeat,
-                                        output_tree, n_trigger_illegal_40_timestamps, n_trigger_160byte_parse_failures, n_trigger_header_ts_errors, n_legal_samples);
+                                        output_tree, n_trigger_illegal_40_timestamps, n_trigger_160byte_parse_failures, n_trigger_header_ts_errors, n_legal_samples, recent_trig_line_timestamp);
             }
             last_trg_line = line;
 
@@ -691,10 +708,10 @@ int main(int argc, char** argv) {
     // y: adc value 0-1024
     TCanvas* c_chn_map = new TCanvas("c_chn_map", "Channel Map", 1200, 2400);
     TH2D* adc_chn_map_0 = new TH2D("adc_chn_map", "ADC Channel Map;Channel;ADC Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
-    TH2D* tot_chn_map_0 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* tot_chn_map_0 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 4096);
     TH2D* toa_chn_map_0 = new TH2D("toa_chn_map", "ToA Channel Map;Channel;ToA Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
     TH2D* adc_chn_map_1 = new TH2D("adc_chn_map", "ADC Channel Map;Channel;ADC Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
-    TH2D* tot_chn_map_1 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
+    TH2D* tot_chn_map_1 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 4096);
     TH2D* toa_chn_map_1 = new TH2D("toa_chn_map", "ToA Channel Map;Channel;ToA Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
 
 
@@ -708,7 +725,11 @@ int main(int argc, char** argv) {
             for (int ch = 0; ch < FPGA_CHANNEL_NUMBER; ++ch)
             {
                 adc_chn_map_0->Fill(ch, branch_val0_list[ch]);
-                tot_chn_map_0->Fill(ch, branch_val1_list[ch]);
+                auto _raw_tot = branch_val1_list[ch];
+                if (_raw_tot >= 512) {
+                    _raw_tot = (_raw_tot - 512) * 8;
+                }
+                tot_chn_map_0->Fill(ch, _raw_tot);
                 toa_chn_map_0->Fill(ch, branch_val2_list[ch]);
             }
             continue;
@@ -718,7 +739,11 @@ int main(int argc, char** argv) {
             for (int ch = 0; ch < FPGA_CHANNEL_NUMBER; ++ch)
             {
                 adc_chn_map_1->Fill(ch, branch_val0_list[ch]);
-                tot_chn_map_1->Fill(ch, branch_val1_list[ch]);
+                auto _raw_tot = branch_val1_list[ch];
+                if (_raw_tot >= 512) {
+                    _raw_tot = (_raw_tot - 512) * 8;
+                }
+                tot_chn_map_1->Fill(ch, _raw_tot);
                 toa_chn_map_1->Fill(ch, branch_val2_list[ch]);
             }
             continue;

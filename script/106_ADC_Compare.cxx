@@ -364,96 +364,96 @@ int main(int argc, char **argv) {
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
     output_root->cd();
 
-    TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
-    pedestal_distribution_th2d->Draw("COLZ");
-    pedestal_distribution_th2d_canvas->SetLogz();
+    // TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
+    // pedestal_distribution_th2d->Draw("COLZ");
+    // pedestal_distribution_th2d_canvas->SetLogz();
 
-    TLatex latex_pedestal;
-    latex_pedestal.SetTextColor(kGray+2);
-    latex_pedestal.SetNDC();
-    latex_pedestal.SetTextSize(0.05);
-    latex_pedestal.SetTextFont(62);
-    latex_pedestal.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    latex_pedestal.SetTextSize(0.035);
-    latex_pedestal.SetTextFont(42);
-    latex_pedestal.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // write run number, date time
-    auto t = std::time(nullptr);
-    auto tm = *std::localtime(&t);
-    std::ostringstream date_stream;
-    date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    latex_pedestal.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    latex_pedestal.DrawLatex(0.12, 0.72, "Pedestal Distribution");
-    latex_pedestal.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    pedestal_distribution_th2d_canvas->Write();
-    pedestal_distribution_th2d_canvas->Close();
+    // TLatex latex_pedestal;
+    // latex_pedestal.SetTextColor(kGray+2);
+    // latex_pedestal.SetNDC();
+    // latex_pedestal.SetTextSize(0.05);
+    // latex_pedestal.SetTextFont(62);
+    // latex_pedestal.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    // latex_pedestal.SetTextSize(0.035);
+    // latex_pedestal.SetTextFont(42);
+    // latex_pedestal.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // // write run number, date time
+    // auto t = std::time(nullptr);
+    // auto tm = *std::localtime(&t);
+    // std::ostringstream date_stream;
+    // date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    // latex_pedestal.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    // latex_pedestal.DrawLatex(0.12, 0.72, "Pedestal Distribution");
+    // latex_pedestal.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    // pedestal_distribution_th2d_canvas->Write();
+    // pedestal_distribution_th2d_canvas->Close();
 
-    TCanvas *peak_distribution_th2d_canvas = new TCanvas("peak_distribution_canvas", "peak_distribution_canvas", 1200, 600);
-    peak_distribution_th2d->Draw("COLZ");
-    peak_distribution_th2d_canvas->SetLogz();
-    TLatex latex_peak;
-    latex_peak.SetTextColor(kGray+2);
-    latex_peak.SetNDC();
-    latex_peak.SetTextSize(0.05);
-    latex_peak.SetTextFont(62);
-    latex_peak.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    latex_peak.SetTextSize(0.035);
-    latex_peak.SetTextFont(42);
-    latex_peak.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // write run number, date time
-    latex_peak.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    latex_peak.DrawLatex(0.12, 0.72, "Peak Distribution");
-    latex_peak.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    peak_distribution_th2d_canvas->Write();
-    peak_distribution_th2d_canvas->Close();
+    // TCanvas *peak_distribution_th2d_canvas = new TCanvas("peak_distribution_canvas", "peak_distribution_canvas", 1200, 600);
+    // peak_distribution_th2d->Draw("COLZ");
+    // peak_distribution_th2d_canvas->SetLogz();
+    // TLatex latex_peak;
+    // latex_peak.SetTextColor(kGray+2);
+    // latex_peak.SetNDC();
+    // latex_peak.SetTextSize(0.05);
+    // latex_peak.SetTextFont(62);
+    // latex_peak.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    // latex_peak.SetTextSize(0.035);
+    // latex_peak.SetTextFont(42);
+    // latex_peak.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // // write run number, date time
+    // latex_peak.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    // latex_peak.DrawLatex(0.12, 0.72, "Peak Distribution");
+    // latex_peak.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    // peak_distribution_th2d_canvas->Write();
+    // peak_distribution_th2d_canvas->Close();
 
-    TCanvas *run_adc_sum_canvas = new TCanvas("run_adc_sum_all_canvas", "run_adc_sum_all_canvas", 800, 600);
-    // draw all the partial histograms in one canvas
-    run_adc_sum_all_hist1d->SetLineColor(kBlack);
-    run_adc_sum_all_hist1d->SetLineWidth(2);
-    run_adc_sum_all_hist1d->Draw("HIST");
-    TLegend *run_adc_sum_legend = new TLegend(0.80, 0.65, 0.89, 0.89);
-    run_adc_sum_legend->SetBorderSize(0);
-    run_adc_sum_legend->SetFillStyle(0);
-    run_adc_sum_legend->SetTextFont(42);
-    run_adc_sum_legend->SetTextSize(0.02);
-    run_adc_sum_legend->AddEntry(run_adc_sum_all_hist1d, "All Events", "l");
+    // TCanvas *run_adc_sum_canvas = new TCanvas("run_adc_sum_all_canvas", "run_adc_sum_all_canvas", 800, 600);
+    // // draw all the partial histograms in one canvas
+    // run_adc_sum_all_hist1d->SetLineColor(kBlack);
+    // run_adc_sum_all_hist1d->SetLineWidth(2);
+    // run_adc_sum_all_hist1d->Draw("HIST");
+    // TLegend *run_adc_sum_legend = new TLegend(0.80, 0.65, 0.89, 0.89);
+    // run_adc_sum_legend->SetBorderSize(0);
+    // run_adc_sum_legend->SetFillStyle(0);
+    // run_adc_sum_legend->SetTextFont(42);
+    // run_adc_sum_legend->SetTextSize(0.02);
+    // run_adc_sum_legend->AddEntry(run_adc_sum_all_hist1d, "All Events", "l");
 
-    for (int i = 0; i < n_partial_hist; i++) {
-        auto hist = run_adc_sum_partial_hist1d_list[i];
-        hist->SetLineColor(kBlue + i * 2);
-        hist->SetLineWidth(1);
-        hist->Draw("HIST SAME");
-        run_adc_sum_legend->AddEntry(hist, ("Partial " + std::to_string(i)).c_str(), "l");
-    }
-    run_adc_sum_legend->Draw();
-    TLatex latex_fit;
-    latex_fit.SetTextColor(kRed);
-    latex_fit.SetNDC();
-    latex_fit.SetTextSize(0.03);
-    latex_fit.SetTextFont(42);
-    latex_fit.DrawLatex(0.60, 0.60, ("Fit Mean: " + std::to_string(final_mean)).c_str());
-    latex_fit.DrawLatex(
-        0.60, 0.55, 
-        ("Fit Sigma: " + std::to_string(final_sigma) + 
-        " (" + std::to_string(static_cast<int>(final_sigma / final_mean * 10000) / 100.0) + "%)").c_str()
-    );
-    // write run number
-    TLatex latex_run_adc_sum;
-    latex_run_adc_sum.SetTextColor(kGray+2);
-    latex_run_adc_sum.SetNDC();
-    latex_run_adc_sum.SetTextSize(0.05);
-    latex_run_adc_sum.SetTextFont(62);
-    latex_run_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    latex_run_adc_sum.SetTextSize(0.035);
-    latex_run_adc_sum.SetTextFont(42);
-    latex_run_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // write run number, date time
-    latex_run_adc_sum.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    latex_run_adc_sum.DrawLatex(0.12, 0.72, "Run ADC Sum");
-    latex_run_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    run_adc_sum_canvas->Write();
-    run_adc_sum_canvas->Close();
+    // for (int i = 0; i < n_partial_hist; i++) {
+    //     auto hist = run_adc_sum_partial_hist1d_list[i];
+    //     hist->SetLineColor(kBlue + i * 2);
+    //     hist->SetLineWidth(1);
+    //     hist->Draw("HIST SAME");
+    //     run_adc_sum_legend->AddEntry(hist, ("Partial " + std::to_string(i)).c_str(), "l");
+    // }
+    // run_adc_sum_legend->Draw();
+    // TLatex latex_fit;
+    // latex_fit.SetTextColor(kRed);
+    // latex_fit.SetNDC();
+    // latex_fit.SetTextSize(0.03);
+    // latex_fit.SetTextFont(42);
+    // latex_fit.DrawLatex(0.60, 0.60, ("Fit Mean: " + std::to_string(final_mean)).c_str());
+    // latex_fit.DrawLatex(
+    //     0.60, 0.55, 
+    //     ("Fit Sigma: " + std::to_string(final_sigma) + 
+    //     " (" + std::to_string(static_cast<int>(final_sigma / final_mean * 10000) / 100.0) + "%)").c_str()
+    // );
+    // // write run number
+    // TLatex latex_run_adc_sum;
+    // latex_run_adc_sum.SetTextColor(kGray+2);
+    // latex_run_adc_sum.SetNDC();
+    // latex_run_adc_sum.SetTextSize(0.05);
+    // latex_run_adc_sum.SetTextFont(62);
+    // latex_run_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    // latex_run_adc_sum.SetTextSize(0.035);
+    // latex_run_adc_sum.SetTextFont(42);
+    // latex_run_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // // write run number, date time
+    // latex_run_adc_sum.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
+    // latex_run_adc_sum.DrawLatex(0.12, 0.72, "Run ADC Sum");
+    // latex_run_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
+    // run_adc_sum_canvas->Write();
+    // run_adc_sum_canvas->Close();
 
     output_root->Close();
 

@@ -169,7 +169,7 @@ int main(int argc, char **argv){
 
     int SWMA_window_size = 200;
     int SWMA_core_size   = 100;
-    int SWMA_threshold   = 1000;
+    int SWMA_threshold   = 10000;
 
     std::vector <UShort_t> fpga_id_pool;
     std::vector <ULong64_t> timestamp_pool;
@@ -275,9 +275,12 @@ int main(int argc, char **argv){
         if (_entry == entries_to_process - 1) {
             flag_last_entry = true;
         }
+        // print out the timestamp and fpga_id
+        // spdlog::info("Entry {}: FPGA ID: {}, Timestamp: {}", _entry, input_fpga_id, input_timestamp);
         if (fpga_id_pool.size() < SWMA_window_size || flag_last_entry) {
             fpga_id_pool.push_back(input_fpga_id);
             timestamp_pool.push_back(input_timestamp);
+            // print out the timestamp and fpga_id
             UInt_t *daqh_list = new UInt_t[4];
             Bool_t *tc_list = new Bool_t[FPGA_CHANNEL_NUMBER];
             Bool_t *tp_list = new Bool_t[FPGA_CHANNEL_NUMBER];
