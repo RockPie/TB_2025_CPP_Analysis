@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
     options.add_options()
-        ("f,file", "Input .root file", cxxopts::value<std::string>())
+        ("f,file", "Input .json config file", cxxopts::value<std::string>())
         ("o,output", "Output .root file", cxxopts::value<std::string>())
         ("e,events", "Number of events to process", cxxopts::value<int>()->default_value("-1"))
         ("v,verbose", "Verbose mode", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
@@ -44,25 +44,106 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // dump/102_EventMatch/beamtests/RunXXXX.root
+    // config/106_scan_0.json
     script_input_file  = parsed["file"].as<std::string>();
-    std::string script_input_run_number = script_input_file.substr(script_input_file.find_last_of("Run") + 1).append(4, '0').substr(0, 4);
+    json config_json;
+    std::ifstream config_ifs(script_input_file);
+    if (!config_ifs.is_open()) {
+        spdlog::error("Failed to open config json file {}", script_input_file);
+        return 1;
+    }
+    config_ifs >> config_json;
+    config_ifs.close();
     script_output_file = parsed["output"].as<std::string>();
     script_n_events    = parsed["events"].as<int>();
     script_verbose     = parsed["verbose"].as<bool>();
 
     configure_logger(script_verbose);
 
-    spdlog::info("Input file: {}", script_input_file);
+    // load configuration from json
+    std::vector<int> run_numbers;
+    // it's either run_energies or run_labels giving the information
+    // look for run_energies first
+    // if not found, look for run_labels
+    std::vector<int> run_energies;
+    std::vector<std::string> run_labels;
+    std::string beam_type;
+    std::string config_description;
+    int target_event_number = -1;
+    bool found_run_energies = false;
+    try {
+        run_numbers = config_json.at("run_numbers").get<std::vector<int>>();
+        if (config_json.contains("run_energies")) {
+            run_energies = config_json.at("run_energies").get<std::vector<int>>();
+            found_run_energies = true;
+        } else if (config_json.contains("run_labels")) {
+            run_labels = config_json.at("run_labels").get<std::vector<std::string>>();
+        } else {
+            spdlog::error("Config json file {} must contain either run_energies or run_labels!", script_input_file);
+            return 1;
+        }
+        beam_type = config_json.at("beam_type").get<std::string>();
+        config_description = config_json.at("description").get<std::string>();
+        if (config_json.contains("n_events")) {
+            target_event_number = config_json.at("n_events").get<int>();
+        }
+    } catch (const json::exception& e) {
+        spdlog::error("Failed to parse config json file {}: {}", script_input_file, e.what());
+        return 1;
+    }
 
-    if (access(script_input_file.c_str(), F_OK) == -1) {
-        spdlog::error("Input file {} does not exist!", script_input_file);
+    std::vector<std::string> run_files;
+
+    const std::string run_file_folder = "dump/102_EventMatch/beamtests/";
+    // try to find the input root file from run number
+    if (run_numbers.empty()) {
+        spdlog::error("No run numbers specified in config json file {}", script_input_file);
         return 1;
     }
-    if (script_input_file.substr(script_input_file.find_last_of(".") + 1) != "root") {
-        spdlog::error("Input file {} should end with .root!", script_input_file);
-        return 1;
+    // run files always 4 digits
+    for (const auto& run_number : run_numbers) {
+        std::string run_file = run_file_folder + "Run" + fmt::format("{:04d}", run_number) + ".root";
+        if (access(run_file.c_str(), F_OK) == -1) {
+            spdlog::error("Run file {} does not exist!", run_file);
+            return 1;
+        } else {
+            spdlog::info("Found run file: {}", run_file);
+        }
+        run_files.push_back(run_file);
     }
+
+    // sort the run files by run energy descending, if run energies are provided
+    if (found_run_energies){
+        std::vector<size_t> indices(run_files.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        std::sort(indices.begin(), indices.end(), [&run_energies](size_t i1, size_t i2) {
+            return run_energies[i1] > run_energies[i2];
+        });
+        std::vector<std::string> sorted_run_files;
+        std::vector<int> sorted_run_energies;
+        std::vector<int> sorted_run_numbers;
+        for (const auto& index : indices) {
+            sorted_run_files.push_back(run_files[index]);
+            sorted_run_energies.push_back(run_energies[index]);
+            sorted_run_numbers.push_back(run_numbers[index]);
+        }
+        run_files = sorted_run_files;
+        run_energies = sorted_run_energies;
+        run_numbers = sorted_run_numbers;
+    }
+    
+
+    // print configuration
+    spdlog::info("Script version: {}", script_version);
+    spdlog::info("Run numbers: {}", fmt::join(run_numbers, ", "));
+    spdlog::info("Beam type: {}", beam_type);
+    if (found_run_energies)
+        spdlog::info("Run energies: {}", fmt::join(run_energies, ", "));
+    else
+        spdlog::info("Run labels: {}", fmt::join(run_labels, ", "));
+
+    spdlog::info("Input config file: {}", script_input_file);
+
     if (script_output_file.substr(script_output_file.find_last_of(".") + 1) != "root") {
         spdlog::error("Output file {} should end with .root!", script_output_file);
         return 1;
@@ -84,7 +165,7 @@ int main(int argc, char **argv) {
     }
 
     spdlog::info("Script name: {}", script_name);
-    spdlog::info("Input file: {}", script_input_file);
+    spdlog::info("Input config file: {}", script_input_file);
     spdlog::info("Output file: {} in {}", script_output_file, script_output_folder);
     spdlog::info("Number of events: {}", script_n_events);
 
@@ -103,40 +184,29 @@ int main(int argc, char **argv) {
 
     // * --- Read input file ------------------------------------------------------------
     // * --------------------------------------------------------------------------------
-    int machine_gun_samples = 16;
-    int vldb_number = 2;
+    const int machine_gun_samples = 16;
+    const int vldb_number = 2;
 
-    TFile *input_root = new TFile(script_input_file.c_str(), "READ");
-    if (input_root->IsZombie()) {
-        spdlog::error("Failed to open input file {}", script_input_file);
-        return 1;
+    // first go through all run files to get total number of events
+    std::vector<int> run_file_event_counts;
+    run_file_event_counts.reserve(run_files.size());
+    for (const auto& run_file : run_files) {
+        TFile *input_root = new TFile(run_file.c_str(), "READ");
+        if (input_root->IsZombie()) {
+            spdlog::error("Failed to open input file {}", run_file);
+            return 1;
+        }
+        TTree *input_tree = (TTree*) input_root->Get("data_tree");
+        if (input_tree == nullptr) {
+            spdlog::error("Failed to get data tree from input file {}", run_file);
+            return 1;
+        }
+        run_file_event_counts.push_back(input_tree->GetEntries());
+        input_root->Close();
     }
-    TTree *input_tree = (TTree*) input_root->Get("data_tree");
-    if (input_tree == nullptr) {
-        spdlog::error("Failed to get data tree from input file {}", script_input_file);
-        return 1;
-    }
-
-    std::vector<std::vector<ULong64_t>> timestamp_pools(vldb_number);
-    std::vector<std::vector<ULong64_t*>> timestamp_pools_original(vldb_number);
-    std::vector<std::vector<UInt_t*>> daqh_list_pools(vldb_number);
-    std::vector<std::vector<Bool_t*>> tc_list_pools(vldb_number);
-    std::vector<std::vector<Bool_t*>> tp_list_pools(vldb_number);
-    std::vector<std::vector<UInt_t*>> val0_list_pools(vldb_number);
-    std::vector<std::vector<UInt_t*>> val1_list_pools(vldb_number);
-    std::vector<std::vector<UInt_t*>> val2_list_pools(vldb_number);
-    std::vector<std::vector<UInt_t*>> crc32_list_pools(vldb_number);
-    std::vector<std::vector<UInt_t*>> last_heartbeat_pools(vldb_number);
-
-    int entry_max = input_tree->GetEntries();
-
-    if (script_n_events > 0 && script_n_events < entry_max) {
-        entry_max = script_n_events;
-    }
-
-    spdlog::info("Processing {} events", entry_max);
-
-    if (entry_max < 1) {
+    // find the smallest number of events among all run files
+    int min_run_file_event_count = *std::min_element(run_file_event_counts.begin(), run_file_event_counts.end());
+    if (min_run_file_event_count < 1) {
         spdlog::error("No events to process");
         // create empty output file
         auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
@@ -147,212 +217,332 @@ int main(int argc, char **argv) {
         output_root->Close();
         return 1;
     }
-
-    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-        auto *branch_timestamps = new ULong64_t[machine_gun_samples];  // 64 bits
-        auto *branch_daqh_list  = new UInt_t[4 * machine_gun_samples];    // 32 bits
-        auto *branch_tc_list    = new Bool_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
-        auto *branch_tp_list    = new Bool_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
-        auto *branch_val0_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
-        auto *branch_val1_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
-        auto *branch_val2_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
-        auto *branch_crc32_list = new UInt_t[4 * machine_gun_samples];
-        auto *branch_last_heartbeat = new UInt_t[machine_gun_samples];
-        input_tree->SetBranchAddress(("timestamps_"    + std::to_string(vldb_id)).c_str(), branch_timestamps);
-        input_tree->SetBranchAddress(("daqh_list_"     + std::to_string(vldb_id)).c_str(), branch_daqh_list);
-        input_tree->SetBranchAddress(("tc_list_"       + std::to_string(vldb_id)).c_str(), branch_tc_list);
-        input_tree->SetBranchAddress(("tp_list_"       + std::to_string(vldb_id)).c_str(), branch_tp_list);
-        input_tree->SetBranchAddress(("val0_list_"     + std::to_string(vldb_id)).c_str(), branch_val0_list);
-        input_tree->SetBranchAddress(("val1_list_"     + std::to_string(vldb_id)).c_str(), branch_val1_list);
-        input_tree->SetBranchAddress(("val2_list_"     + std::to_string(vldb_id)).c_str(), branch_val2_list);
-        input_tree->SetBranchAddress(("crc32_list_"    + std::to_string(vldb_id)).c_str(), branch_crc32_list);
-        input_tree->SetBranchAddress(("last_heartbeat_"+ std::to_string(vldb_id)).c_str(), branch_last_heartbeat);
-        timestamp_pools_original[vldb_id].push_back(branch_timestamps);
-        daqh_list_pools[vldb_id].push_back(branch_daqh_list);
-        tc_list_pools[vldb_id].push_back(branch_tc_list);
-        tp_list_pools[vldb_id].push_back(branch_tp_list);
-        val0_list_pools[vldb_id].push_back(branch_val0_list);
-        val1_list_pools[vldb_id].push_back(branch_val1_list);
-        val2_list_pools[vldb_id].push_back(branch_val2_list);
-        crc32_list_pools[vldb_id].push_back(branch_crc32_list);
-        last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
+    spdlog::info("Minimum number of events among all run files: {}", min_run_file_event_count);
+    if (target_event_number > 0 && target_event_number < min_run_file_event_count) {
+        min_run_file_event_count = target_event_number;
+        spdlog::info("Using target number of events from config: {}", min_run_file_event_count);
     }
 
-    TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
-    pedestal_distribution_th2d->SetStats(0);
-    pedestal_distribution_th2d->SetTitle("");
-
-    TH2D* peak_distribution_th2d = new TH2D("peak_distribution", "Peak Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 1024);
-    peak_distribution_th2d->SetStats(0);
-    peak_distribution_th2d->SetTitle("");
-
-    // if events are more than 10k, make 10 histograms each for 1/10 of the events
-    // if events are more than 1k, make 5 histograms each for 1/5 of the events
-    // other wise make 2 histograms
-    int n_partial_hist = 2;
-    if (entry_max > 100000) {
-        n_partial_hist = 10;
-    } else if (entry_max > 10000) {
-        n_partial_hist = 5;
-    } else {
-        n_partial_hist = 2;
+    std::vector<std::vector<Double_t>*> files_adc_sums;
+    for (int _file_index = 0; _file_index < run_files.size(); _file_index++) {
+        auto* adc_sums = new std::vector<Double_t>;
+        adc_sums->reserve(min_run_file_event_count);
+        files_adc_sums.push_back(adc_sums);
     }
 
-    std::vector<double> event_adc_sum_list;
-    event_adc_sum_list.reserve(entry_max);
-    std::vector<double> event_adc_sum_list_copy;
-    event_adc_sum_list.reserve(entry_max);
-    // start event loop
-    for (int entry = 0; entry < entry_max; entry++) {
-        input_tree->GetEntry(entry);
-        double adc_sum_all = 0;
+    std::vector<Double_t> adc_sums_sorting;
+    adc_sums_sorting.reserve(min_run_file_event_count * run_files.size());
+
+    // then second round to actually read the data
+    for (int _file_index = 0; _file_index < run_files.size(); _file_index++) {
+        const auto& run_file = run_files[_file_index];
+        spdlog::info("Processing run file: {}", run_file);
+        
+        auto adc_sums = files_adc_sums[_file_index];
+
+        TFile *input_root = new TFile(run_file.c_str(), "READ");
+        if (input_root->IsZombie()) {
+            spdlog::error("Failed to open input file {}", run_file);
+            return 1;
+        }
+        TTree *input_tree = (TTree*) input_root->Get("data_tree");
+        if (input_tree == nullptr) {
+            spdlog::error("Failed to get data tree from input file {}", run_file);
+            return 1;
+        }
+
+        std::vector<std::vector<ULong64_t>> timestamp_pools(vldb_number);
+        std::vector<std::vector<ULong64_t*>> timestamp_pools_original(vldb_number);
+        std::vector<std::vector<UInt_t*>> daqh_list_pools(vldb_number);
+        std::vector<std::vector<Bool_t*>> tc_list_pools(vldb_number);
+        std::vector<std::vector<Bool_t*>> tp_list_pools(vldb_number);
+        std::vector<std::vector<UInt_t*>> val0_list_pools(vldb_number);
+        std::vector<std::vector<UInt_t*>> val1_list_pools(vldb_number);
+        std::vector<std::vector<UInt_t*>> val2_list_pools(vldb_number);
+        std::vector<std::vector<UInt_t*>> crc32_list_pools(vldb_number);
+        std::vector<std::vector<UInt_t*>> last_heartbeat_pools(vldb_number);
+
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-            // channel loop
-            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                int channel_index_in_h2g = channel % 76;
-                int channel_index_in_h2g_half = channel_index_in_h2g % 38;
-                int asic_id = channel / 76;
-                int half_id = channel_index_in_h2g / 38;
+            auto *branch_timestamps = new ULong64_t[machine_gun_samples];  // 64 bits
+            auto *branch_daqh_list  = new UInt_t[4 * machine_gun_samples];    // 32 bits
+            auto *branch_tc_list    = new Bool_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
+            auto *branch_tp_list    = new Bool_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
+            auto *branch_val0_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
+            auto *branch_val1_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
+            auto *branch_val2_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
+            auto *branch_crc32_list = new UInt_t[4 * machine_gun_samples];
+            auto *branch_last_heartbeat = new UInt_t[machine_gun_samples];
+            input_tree->SetBranchAddress(("timestamps_"    + std::to_string(vldb_id)).c_str(), branch_timestamps);
+            input_tree->SetBranchAddress(("daqh_list_"     + std::to_string(vldb_id)).c_str(), branch_daqh_list);
+            input_tree->SetBranchAddress(("tc_list_"       + std::to_string(vldb_id)).c_str(), branch_tc_list);
+            input_tree->SetBranchAddress(("tp_list_"       + std::to_string(vldb_id)).c_str(), branch_tp_list);
+            input_tree->SetBranchAddress(("val0_list_"     + std::to_string(vldb_id)).c_str(), branch_val0_list);
+            input_tree->SetBranchAddress(("val1_list_"     + std::to_string(vldb_id)).c_str(), branch_val1_list);
+            input_tree->SetBranchAddress(("val2_list_"     + std::to_string(vldb_id)).c_str(), branch_val2_list);
+            input_tree->SetBranchAddress(("crc32_list_"    + std::to_string(vldb_id)).c_str(), branch_crc32_list);
+            input_tree->SetBranchAddress(("last_heartbeat_"+ std::to_string(vldb_id)).c_str(), branch_last_heartbeat);
+            timestamp_pools_original[vldb_id].push_back(branch_timestamps);
+            daqh_list_pools[vldb_id].push_back(branch_daqh_list);
+            tc_list_pools[vldb_id].push_back(branch_tc_list);
+            tp_list_pools[vldb_id].push_back(branch_tp_list);
+            val0_list_pools[vldb_id].push_back(branch_val0_list);
+            val1_list_pools[vldb_id].push_back(branch_val1_list);
+            val2_list_pools[vldb_id].push_back(branch_val2_list);
+            crc32_list_pools[vldb_id].push_back(branch_crc32_list);
+            last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
+        }
 
-                if (vldb_id == 0 && asic_id == 1)
-                    continue;
-                
-                if (channel_index_in_h2g_half == 19)
-                    continue;
-                if (channel_index_in_h2g_half == 0)
-                    continue;
-
-                int channel_index_no_CM_Calib = channel_index_in_h2g_half;
-                
-                if (channel_index_in_h2g_half > 19)
-                    channel_index_no_CM_Calib -= 2;
-                else if (channel_index_in_h2g_half > 0)
-                    channel_index_no_CM_Calib -= 1;
-
-                int channel_number_valid = asic_id * 72 + half_id * 36 + (channel_index_no_CM_Calib);
-
-                // pedestal to be the average of the smallest 2 of the first 4 samples
-                UInt_t adc_pedestal = 1024;
-                std::vector<UInt_t> adc_samples;
-                UInt_t adc_peak = 0;
-                for (int sample = 0; sample < machine_gun_samples; sample++) {
-                    auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
-                    adc_samples.push_back(adc);
-                    if (adc > adc_peak) {
-                        adc_peak = adc;
+        for (int _entry = 0; _entry < min_run_file_event_count; _entry++) {
+            input_tree->GetEntry(_entry);
+            // process data here
+            Double_t adc_sum = 0.0;
+            for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+                for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                    int adc_max = 0;
+                    int adc_pedestal = 0;
+                    std::vector<int> adc_pedestal_samples;
+                    for (int sample = 0; sample < machine_gun_samples; sample++) {
+                        auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
+                        if (sample < 3){
+                            adc_pedestal_samples.push_back(adc_value);
+                        }
+                        if (adc_value > adc_max) {
+                            adc_max = adc_value;
+                        }
+                    } // end of sample loop
+                    // calculate pedestal as average of the smallest 2 samples among first 3 samples
+                    std::sort(adc_pedestal_samples.begin(), adc_pedestal_samples.end());
+                    adc_pedestal = (adc_pedestal_samples[0] + adc_pedestal_samples[1]) / 2;
+                    if (adc_max <= adc_pedestal) {
+                        continue;
                     }
-                }
-                std::sort(adc_samples.begin(), adc_samples.end());
-                adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
-
-                auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
-                if (adc_peak_subtracted < 0) {
-                    adc_peak_subtracted = 0;
-                }
-
-                pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
-                peak_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
-
-                adc_sum_all += adc_peak_subtracted;
-            } // end of channel loop
-        } // end of vldb loop
-        event_adc_sum_list.push_back(adc_sum_all);
-        event_adc_sum_list_copy.push_back(adc_sum_all);
-    } // end of event loop
-
-    // calculate the 90% max of all adc sums
-    // sort the adc sums
-    if (event_adc_sum_list.empty()) {
-        spdlog::warn("No events processed, using default ADC sum range.");
-        event_adc_sum_list.push_back(0.0);
-    }
-    std::sort(event_adc_sum_list.begin(), event_adc_sum_list.end());
-    // get the 90% max
-
-    double adc_sum_max = event_adc_sum_list[std::min(static_cast<size_t>(event_adc_sum_list.size() * 0.9), event_adc_sum_list.size() - 1)];
-    adc_sum_max = adc_sum_max * 1.3; // add 30% margin
-    // make 10 histograms each for 1/10 of the events
-    std::vector<TH1D*> run_adc_sum_partial_hist1d_list;
-
-    spdlog::info("ADC sum max: {}", adc_sum_max);
-
-    TH1D* run_adc_sum_all_hist1d = new TH1D("run_adc_sum_all", "Run ADC Sum All;ADC Sum;Counts", 256, 0, adc_sum_max);
-    run_adc_sum_all_hist1d->SetStats(0);
-    run_adc_sum_all_hist1d->SetTitle("");
-
-    for (int i = 0; i < n_partial_hist; i++) {
-        auto hist = new TH1D(("run_adc_sum_partial_" + std::to_string(i)).c_str(), ("Run ADC Sum Partial " + std::to_string(i) + ";""ADC Sum;Counts").c_str(), 256, 0, adc_sum_max);
-        hist->SetStats(0);
-        hist->SetTitle("");
-        run_adc_sum_partial_hist1d_list.push_back(hist);
+                    // spdlog::debug("Event {}: VLDB {} Channel {}: Pedestal = {}, Peak = {}", _entry, vldb_id, channel, adc_pedestal, adc_max);
+                    adc_sum += Double_t(adc_max - adc_pedestal);
+                } // end of channel loop
+            } // end of vldb_id loop
+            // spdlog::info("Event {}: ADC sum = {}", _entry, adc_sum);
+            adc_sums->push_back(adc_sum);
+            adc_sums_sorting.push_back(adc_sum);
+        } // end of entry loop
+        input_root->Close();
     }
 
-    for (size_t i = 0; i < event_adc_sum_list.size(); i++) {
-        auto& adc_sum = event_adc_sum_list_copy[i];
-        run_adc_sum_all_hist1d->Fill(adc_sum);
-        int partial_hist_index = i * n_partial_hist / event_adc_sum_list.size();
-        run_adc_sum_partial_hist1d_list[partial_hist_index]->Fill(adc_sum);
-    }
+    // make a color list
+    std::vector<int> color_list = {kRed, kBlue, kGreen+2, kMagenta+2, kCyan+2, kOrange+7, kViolet+7, kSpring+7, kTeal+7, kAzure+7, kPink+7};
 
-    double pre_fit_mean = run_adc_sum_all_hist1d->GetMean();
-    double pre_fit_sigma = run_adc_sum_all_hist1d->GetRMS();
-    double fit_min = std::max(0.0, pre_fit_mean - 2 * pre_fit_sigma);
-    double fit_max = std::min(adc_sum_max, pre_fit_mean + 2 * pre_fit_sigma);
+    // * calculate the 90% largest ADC sum
+    std::sort(adc_sums_sorting.begin(), adc_sums_sorting.end());
+    Double_t adc_sum_90pct = adc_sums_sorting[adc_sums_sorting.size() * 9 / 10];
+    spdlog::info("90% largest ADC sum among all events: {}", adc_sum_90pct);
+    const double hist_max_adc_sum = adc_sum_90pct * 1.3;
 
-    TF1* gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
-    gaus_fit_pre->SetLineColorAlpha(kWhite, 0.0);
-    run_adc_sum_all_hist1d->Fit(gaus_fit_pre, "RQ");
-
-    double fit_mean = gaus_fit_pre->GetParameter(1);
-    double fit_sigma = gaus_fit_pre->GetParameter(2);
-
-    std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
-    std::vector<double> fit_offsets = {0.2, 0.4, 0.6};
-    std::vector<double> fit_results_means;
-    std::vector<double> fit_results_sigmas;
-    for (auto fit_sigma_multiplier : fit_sigmas) {
-        for (auto fit_offset_multiplier : fit_offsets) {
-            double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
-            double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
-            TF1* gaus_fit_final = new TF1(("gaus_fit_final_" + std::to_string(static_cast<int>(fit_sigma_multiplier * 10)) + "_" + std::to_string(static_cast<int>(fit_offset_multiplier * 10))).c_str(), "gaus", fit_min_final, fit_max_final);
-            // set transparency
-            gaus_fit_final->SetLineColorAlpha(kPink, 0.2);
-            run_adc_sum_all_hist1d->Fit(gaus_fit_final, "RQ+");
-            double final_fit_mean = gaus_fit_final->GetParameter(1);
-            double final_fit_sigma = gaus_fit_final->GetParameter(2);
-            fit_results_means.push_back(final_fit_mean);
-            fit_results_sigmas.push_back(final_fit_sigma);
-            spdlog::info("Final Fit with sigma range {} and offset {}: mean = {}, sigma = {}", fit_sigma_multiplier, fit_offset_multiplier, final_fit_mean, final_fit_sigma);
+    // * create array of hist1d for each run file
+    double hist_max_bin_value = 0;
+    std::vector<TH1D*> run_adc_sum_hist1d_list;
+    const int hist_bin_number = 256;
+    for (int _file_index = 0; _file_index < run_files.size();_file_index++) {
+        auto& adc_sums = files_adc_sums[_file_index];
+        if (adc_sums->empty()) {
+            spdlog::warn("No ADC sums calculated for run file {}, skipping histogram creation", run_files[_file_index]);
+            continue;
+        }
+        TH1D* run_adc_sum_hist1d = new TH1D(
+            fmt::format("run_adc_sum_{}", _file_index).c_str(),
+            fmt::format("Run ADC Sum {};ADC Sum;Events", _file_index).c_str(),
+            hist_bin_number,
+            0, hist_max_adc_sum
+        );
+        run_adc_sum_hist1d->SetStats(0);
+        run_adc_sum_hist1d->SetTitle("");
+        for (const auto& adc_sum : *adc_sums) {
+            run_adc_sum_hist1d->Fill(adc_sum);
+        }
+        run_adc_sum_hist1d_list.push_back(run_adc_sum_hist1d);
+        if (run_adc_sum_hist1d->GetMaximum() > hist_max_bin_value) {
+            hist_max_bin_value = run_adc_sum_hist1d->GetMaximum();
         }
     }
 
-    // calculate the average of the fit results
-    double final_mean = 0.0;
-    double final_sigma = 0.0;
-    double final_mean_error = 0.0;
-    double final_sigma_error = 0.0;
-    if (!fit_results_means.empty()) {
-        final_mean = std::accumulate(fit_results_means.begin(), fit_results_means.end(), 0.0) / fit_results_means.size();
-        final_sigma = std::accumulate(fit_results_sigmas.begin(), fit_results_sigmas.end(), 0.0) / fit_results_sigmas.size();
-    } else {
-        final_mean = fit_mean;
-        final_sigma = fit_sigma;
+    // * set y axis range
+    for (auto* hist : run_adc_sum_hist1d_list) {
+        hist->GetYaxis()->SetRangeUser(0, hist_max_bin_value * 1.3);
     }
-    if (fit_results_means.size() > 1) {
-        double mean_variance = 0.0;
-        double sigma_variance = 0.0;
-        for (size_t i = 0; i < fit_results_means.size(); i++) {
-            mean_variance += (fit_results_means[i] - final_mean) * (fit_results_means[i] - final_mean);
-            sigma_variance += (fit_results_sigmas[i] - final_sigma) * (fit_results_sigmas[i] - final_sigma);
+
+    // * Draw them in the same canvas
+    TCanvas* canvas_adc_sum = new TCanvas("canvas_adc_sum", "Canvas ADC Sum", 800, 600);
+    TLegend* legend_adc_sum = new TLegend(0.7, 0.7, 0.89, 0.89);
+    for (int _file_index = 0; _file_index < run_adc_sum_hist1d_list.size(); _file_index++) {
+        auto* hist = run_adc_sum_hist1d_list[_file_index];
+        hist->SetLineColor(color_list[_file_index % color_list.size()]);
+        hist->SetLineWidth(2);
+        std::string legend_entry;
+        if (found_run_energies) {
+            legend_entry = fmt::format("Run {} ({} GeV)", run_numbers[_file_index], run_energies[_file_index]);
+        } else {
+            legend_entry = fmt::format("Run {} ({})", run_numbers[_file_index], run_labels[_file_index]);
         }
-        mean_variance /= (fit_results_means.size() - 1);
-        sigma_variance /= (fit_results_sigmas.size() - 1);
-        final_mean_error = std::sqrt(mean_variance / fit_results_means.size());
-        final_sigma_error = std::sqrt(sigma_variance / fit_results_sigmas.size());
-    } else {
-        final_mean_error = gaus_fit_pre->GetParError(1);
-        final_sigma_error = gaus_fit_pre->GetParError(2);
+        legend_adc_sum->AddEntry(hist, legend_entry.c_str(), "l");
+        if (_file_index == 0) {
+            hist->Draw("HIST");
+        } else {
+            hist->Draw("HIST SAME");
+        }
     }
+    legend_adc_sum->SetBorderSize(0);
+    legend_adc_sum->Draw();
+
+    // * Save output file
+
+
+    // TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
+    // pedestal_distribution_th2d->SetStats(0);
+    // pedestal_distribution_th2d->SetTitle("");
+
+    // TH2D* peak_distribution_th2d = new TH2D("peak_distribution", "Peak Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 1024);
+    // peak_distribution_th2d->SetStats(0);
+    // peak_distribution_th2d->SetTitle("");
+
+    // std::vector<double> event_adc_sum_list;
+    // event_adc_sum_list.reserve(entry_max);
+    // std::vector<double> event_adc_sum_list_copy;
+    // event_adc_sum_list.reserve(entry_max);
+    // // start event loop
+    // for (int entry = 0; entry < entry_max; entry++) {
+    //     input_tree->GetEntry(entry);
+    //     double adc_sum_all = 0;
+    //     for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+    //         // channel loop
+    //         for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+    //             int channel_index_in_h2g = channel % 76;
+    //             int channel_index_in_h2g_half = channel_index_in_h2g % 38;
+    //             int asic_id = channel / 76;
+    //             int half_id = channel_index_in_h2g / 38;
+
+    //             if (vldb_id == 0 && asic_id == 1)
+    //                 continue;
+                
+    //             if (channel_index_in_h2g_half == 19)
+    //                 continue;
+    //             if (channel_index_in_h2g_half == 0)
+    //                 continue;
+
+    //             int channel_index_no_CM_Calib = channel_index_in_h2g_half;
+                
+    //             if (channel_index_in_h2g_half > 19)
+    //                 channel_index_no_CM_Calib -= 2;
+    //             else if (channel_index_in_h2g_half > 0)
+    //                 channel_index_no_CM_Calib -= 1;
+
+    //             int channel_number_valid = asic_id * 72 + half_id * 36 + (channel_index_no_CM_Calib);
+
+    //             // pedestal to be the average of the smallest 2 of the first 4 samples
+    //             UInt_t adc_pedestal = 1024;
+    //             std::vector<UInt_t> adc_samples;
+    //             UInt_t adc_peak = 0;
+    //             for (int sample = 0; sample < machine_gun_samples; sample++) {
+    //                 auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
+    //                 adc_samples.push_back(adc);
+    //                 if (adc > adc_peak) {
+    //                     adc_peak = adc;
+    //                 }
+    //             }
+    //             std::sort(adc_samples.begin(), adc_samples.end());
+    //             adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
+
+    //             auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
+    //             if (adc_peak_subtracted < 0) {
+    //                 adc_peak_subtracted = 0;
+    //             }
+
+    //             pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
+    //             peak_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
+
+    //             adc_sum_all += adc_peak_subtracted;
+    //         } // end of channel loop
+    //     } // end of vldb loop
+    //     event_adc_sum_list.push_back(adc_sum_all);
+    //     event_adc_sum_list_copy.push_back(adc_sum_all);
+    // } // end of event loop
+
+    // // calculate the 90% max of all adc sums
+    // // sort the adc sums
+    // if (event_adc_sum_list.empty()) {
+    //     spdlog::warn("No events processed, using default ADC sum range.");
+    //     event_adc_sum_list.push_back(0.0);
+    // }
+    // std::sort(event_adc_sum_list.begin(), event_adc_sum_list.end());
+    // // get the 90% max
+
+    // double adc_sum_max = event_adc_sum_list[std::min(static_cast<size_t>(event_adc_sum_list.size() * 0.9), event_adc_sum_list.size() - 1)];
+    // adc_sum_max = adc_sum_max * 1.3; // add 30% margin
+    // // make 10 histograms each for 1/10 of the events
+    // std::vector<TH1D*> run_adc_sum_partial_hist1d_list;
+
+    // spdlog::info("ADC sum max: {}", adc_sum_max);
+
+    // TH1D* run_adc_sum_all_hist1d = new TH1D("run_adc_sum_all", "Run ADC Sum All;ADC Sum;Counts", 256, 0, adc_sum_max);
+    // run_adc_sum_all_hist1d->SetStats(0);
+    // run_adc_sum_all_hist1d->SetTitle("");
+
+    // double pre_fit_mean = run_adc_sum_all_hist1d->GetMean();
+    // double pre_fit_sigma = run_adc_sum_all_hist1d->GetRMS();
+    // double fit_min = std::max(0.0, pre_fit_mean - 2 * pre_fit_sigma);
+    // double fit_max = std::min(adc_sum_max, pre_fit_mean + 2 * pre_fit_sigma);
+
+    // TF1* gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
+    // gaus_fit_pre->SetLineColorAlpha(kWhite, 0.0);
+    // run_adc_sum_all_hist1d->Fit(gaus_fit_pre, "RQ");
+
+    // double fit_mean = gaus_fit_pre->GetParameter(1);
+    // double fit_sigma = gaus_fit_pre->GetParameter(2);
+
+    // std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
+    // std::vector<double> fit_offsets = {0.2, 0.4, 0.6};
+    // std::vector<double> fit_results_means;
+    // std::vector<double> fit_results_sigmas;
+    // for (auto fit_sigma_multiplier : fit_sigmas) {
+    //     for (auto fit_offset_multiplier : fit_offsets) {
+    //         double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+    //         double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+    //         TF1* gaus_fit_final = new TF1(("gaus_fit_final_" + std::to_string(static_cast<int>(fit_sigma_multiplier * 10)) + "_" + std::to_string(static_cast<int>(fit_offset_multiplier * 10))).c_str(), "gaus", fit_min_final, fit_max_final);
+    //         // set transparency
+    //         gaus_fit_final->SetLineColorAlpha(kPink, 0.2);
+    //         run_adc_sum_all_hist1d->Fit(gaus_fit_final, "RQ+");
+    //         double final_fit_mean = gaus_fit_final->GetParameter(1);
+    //         double final_fit_sigma = gaus_fit_final->GetParameter(2);
+    //         fit_results_means.push_back(final_fit_mean);
+    //         fit_results_sigmas.push_back(final_fit_sigma);
+    //         spdlog::info("Final Fit with sigma range {} and offset {}: mean = {}, sigma = {}", fit_sigma_multiplier, fit_offset_multiplier, final_fit_mean, final_fit_sigma);
+    //     }
+    // }
+
+    // // calculate the average of the fit results
+    // double final_mean = 0.0;
+    // double final_sigma = 0.0;
+    // double final_mean_error = 0.0;
+    // double final_sigma_error = 0.0;
+    // if (!fit_results_means.empty()) {
+    //     final_mean = std::accumulate(fit_results_means.begin(), fit_results_means.end(), 0.0) / fit_results_means.size();
+    //     final_sigma = std::accumulate(fit_results_sigmas.begin(), fit_results_sigmas.end(), 0.0) / fit_results_sigmas.size();
+    // } else {
+    //     final_mean = fit_mean;
+    //     final_sigma = fit_sigma;
+    // }
+    // if (fit_results_means.size() > 1) {
+    //     double mean_variance = 0.0;
+    //     double sigma_variance = 0.0;
+    //     for (size_t i = 0; i < fit_results_means.size(); i++) {
+    //         mean_variance += (fit_results_means[i] - final_mean) * (fit_results_means[i] - final_mean);
+    //         sigma_variance += (fit_results_sigmas[i] - final_sigma) * (fit_results_sigmas[i] - final_sigma);
+    //     }
+    //     mean_variance /= (fit_results_means.size() - 1);
+    //     sigma_variance /= (fit_results_sigmas.size() - 1);
+    //     final_mean_error = std::sqrt(mean_variance / fit_results_means.size());
+    //     final_sigma_error = std::sqrt(sigma_variance / fit_results_sigmas.size());
+    // } else {
+    //     final_mean_error = gaus_fit_pre->GetParError(1);
+    //     final_sigma_error = gaus_fit_pre->GetParError(2);
+    // }
 
     auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
     if (output_root->IsZombie()) {
@@ -363,6 +553,28 @@ int main(int argc, char **argv) {
     std::string annotation_canvas_title = CANVAS_TITLE;
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
     output_root->cd();
+
+    // save the adc sum canvas
+    TLatex latex_adc_sum;
+    latex_adc_sum.SetTextColor(kGray+2);
+    latex_adc_sum.SetNDC();
+    latex_adc_sum.SetTextSize(0.05);
+    latex_adc_sum.SetTextFont(62);
+    latex_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    latex_adc_sum.SetTextSize(0.035);
+    latex_adc_sum.SetTextFont(42);
+    latex_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    // write run number, date time
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    std::ostringstream date_stream;
+    date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    latex_adc_sum.DrawLatex(0.12, 0.76, config_description.c_str());
+    // hardon or electron beam
+    latex_adc_sum.DrawLatex(0.12, 0.72, ("Beam: " + beam_type).c_str());
+    latex_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());
+    canvas_adc_sum->Write();
+    canvas_adc_sum->Close();
 
     // TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
     // pedestal_distribution_th2d->Draw("COLZ");
@@ -456,8 +668,6 @@ int main(int argc, char **argv) {
     // run_adc_sum_canvas->Close();
 
     output_root->Close();
-
-    input_root->Close();
 
     spdlog::info("Output file {} has been saved.", script_output_file);
 

@@ -1,4 +1,5 @@
 # Snakefile
+include: "multi_file_workflow.smk"
 from pathlib import Path
 import json
 import os
@@ -27,7 +28,7 @@ def _creds():
     with open(CRED_FILE, "r") as fh:
         return json.load(fh)
 
-EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting"]
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare"]
 
 # ---- Discover valid (dtype, run) pairs ----
 pairs = []
@@ -50,7 +51,8 @@ rule all:
         FINAL_EXES,
         FINAL_TARGETS_HITMAP,
         FINAL_TARGETS_ADC,
-        FINAL_TARGETS_ToAToTStart
+        FINAL_TARGETS_ToAToTStart,
+        ALL_106_OUTPUTS
 
 # =========================
 # Build system integration
