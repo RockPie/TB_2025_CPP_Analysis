@@ -1,0 +1,17 @@
+{
+    "scan_id": 10,
+    "description": "Bias scan with 0.1 CC Gain",
+    "output_file_name": "scan_10_analysis.root",
+    "n_events": -1,
+    "beam_type": "40 GeV Electron",
+    "run_numbers": [
+        461,
+        462,
+        465
+    ],
+    "run_labels": [
+        "54.5V",
+        "55V",
+        "54V"
+    ]
+}

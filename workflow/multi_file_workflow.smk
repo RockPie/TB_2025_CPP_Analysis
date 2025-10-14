@@ -53,7 +53,7 @@ rule ADC_Compare_106:
     shell:
         r"""
         mkdir -p "{DUMP_DIR}/106_ADC_Compare" "{LOG_DIR}/106_ADC_Compare"
-        "{input.exe}" -c "{input.cfg}" -i {input.runs} -o "{output.out}" > "{log}" 2>&1
+        "{input.exe}" -f "{input.cfg}" -o "{output.out}" > "{log}" 2>&1
         """
 
 # ----- 106: convenience target ----------------------------------------------

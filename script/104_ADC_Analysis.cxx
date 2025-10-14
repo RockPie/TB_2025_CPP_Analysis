@@ -1,6 +1,7 @@
 #include <fstream>
 #include <string>
 #include "H2GCROC_Common.hxx"
+#include "H2GCROC_ADC_Analysis.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -232,20 +233,20 @@ int main(int argc, char **argv) {
                 int channel_number_valid = asic_id * 72 + half_id * 36 + (channel_index_no_CM_Calib);
 
                 // pedestal to be the average of the smallest 2 of the first 4 samples
-                UInt_t adc_pedestal = 1024;
-                std::vector<UInt_t> adc_samples;
-                UInt_t adc_peak = 0;
+                double adc_pedestal = 0;
+                std::vector<int> adc_samples;
+                double adc_peak = 0;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
                     adc_samples.push_back(adc);
-                    if (adc > adc_peak) {
-                        adc_peak = adc;
+                    auto adc_double = static_cast<double>(adc);
+                    if (adc_double > adc_peak) {
+                        adc_peak = adc_double;
                     }
                 }
-                std::sort(adc_samples.begin(), adc_samples.end());
-                adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
+                pedestal_subtraction_2minoffirst3(adc_samples, adc_pedestal);
 
-                auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
+                double adc_peak_subtracted = adc_peak - adc_pedestal;
                 if (adc_peak_subtracted < 0) {
                     adc_peak_subtracted = 0;
                 }
@@ -306,14 +307,20 @@ int main(int argc, char **argv) {
     double fit_mean = gaus_fit_pre->GetParameter(1);
     double fit_sigma = gaus_fit_pre->GetParameter(2);
 
-    std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
-    std::vector<double> fit_offsets = {0.2, 0.4, 0.6};
+    // std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
+    // std::vector<double> fit_offsets = {0.2, 0.4, 0.6};
+    std::vector<double> fit_sigma_range_left = {0.3, 0.4, 0.5};
+    std::vector<double> fit_sigma_range_right = {2.0, 2.5, 3.0};
     std::vector<double> fit_results_means;
     std::vector<double> fit_results_sigmas;
-    for (auto fit_sigma_multiplier : fit_sigmas) {
-        for (auto fit_offset_multiplier : fit_offsets) {
-            double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
-            double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+    // for (auto fit_sigma_multiplier : fit_sigmas) {
+    //     for (auto fit_offset_multiplier : fit_offsets) {
+    //         double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+    //         double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
+    for (auto fit_sigma_multiplier : fit_sigma_range_left) {
+        for (auto fit_offset_multiplier : fit_sigma_range_right) {
+            double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma);
+            double fit_max_final = std::min(adc_sum_max, fit_mean + fit_offset_multiplier * fit_sigma);
             TF1* gaus_fit_final = new TF1(("gaus_fit_final_" + std::to_string(static_cast<int>(fit_sigma_multiplier * 10)) + "_" + std::to_string(static_cast<int>(fit_offset_multiplier * 10))).c_str(), "gaus", fit_min_final, fit_max_final);
             // set transparency
             gaus_fit_final->SetLineColorAlpha(kPink, 0.2);

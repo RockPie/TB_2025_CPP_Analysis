@@ -1,0 +1,19 @@
+{
+    "scan_id": 3,
+    "description": "Bias scan with 0.1 CC Gain",
+    "output_file_name": "scan_3_analysis.root",
+    "n_events": -1,
+    "beam_type": "60 GeV Hadron",
+    "run_numbers": [
+        342,
+        359,
+        366,
+        436
+    ],
+    "run_labels": [
+        "53V",
+        "53.5V",
+        "54V",
+        "54.5V"
+    ]
+}

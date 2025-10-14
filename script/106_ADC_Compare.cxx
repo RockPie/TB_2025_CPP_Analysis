@@ -1,6 +1,7 @@
 #include <fstream>
 #include <string>
 #include "H2GCROC_Common.hxx"
+#include "H2GCROC_ADC_Analysis.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -69,6 +70,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> run_labels;
     std::string beam_type;
     std::string config_description;
+    bool enable_gaussian_fit = false;
     int target_event_number = -1;
     bool found_run_energies = false;
     try {
@@ -81,6 +83,9 @@ int main(int argc, char **argv) {
         } else {
             spdlog::error("Config json file {} must contain either run_energies or run_labels!", script_input_file);
             return 1;
+        }
+        if (config_json.contains("enable_gaussian_fit")) {
+            enable_gaussian_fit = config_json.at("enable_gaussian_fit").get<bool>();
         }
         beam_type = config_json.at("beam_type").get<std::string>();
         config_description = config_json.at("description").get<std::string>();
@@ -141,6 +146,11 @@ int main(int argc, char **argv) {
         spdlog::info("Run energies: {}", fmt::join(run_energies, ", "));
     else
         spdlog::info("Run labels: {}", fmt::join(run_labels, ", "));
+
+    if (enable_gaussian_fit)
+        spdlog::info("Gaussian fit enabled");
+    else
+        spdlog::info("Gaussian fit disabled");
 
     spdlog::info("Input config file: {}", script_input_file);
 
@@ -298,21 +308,20 @@ int main(int argc, char **argv) {
             Double_t adc_sum = 0.0;
             for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
                 for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                    int adc_max = 0;
-                    int adc_pedestal = 0;
-                    std::vector<int> adc_pedestal_samples;
+                    double adc_max = 0;
+                    double adc_pedestal = 0;
+                    std::vector<int> adc_samples;
+                    adc_samples.reserve(machine_gun_samples);
                     for (int sample = 0; sample < machine_gun_samples; sample++) {
                         auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
-                        if (sample < 3){
-                            adc_pedestal_samples.push_back(adc_value);
-                        }
-                        if (adc_value > adc_max) {
-                            adc_max = adc_value;
+                        adc_samples.push_back(adc_value);
+                        auto adc_value_double = double(adc_value);
+                        if (adc_value_double > adc_max) {
+                            adc_max = adc_value_double;
                         }
                     } // end of sample loop
                     // calculate pedestal as average of the smallest 2 samples among first 3 samples
-                    std::sort(adc_pedestal_samples.begin(), adc_pedestal_samples.end());
-                    adc_pedestal = (adc_pedestal_samples[0] + adc_pedestal_samples[1]) / 2;
+                    pedestal_subtraction_2minoffirst3(adc_samples, adc_pedestal);
                     if (adc_max <= adc_pedestal) {
                         continue;
                     }
@@ -363,6 +372,55 @@ int main(int argc, char **argv) {
         }
     }
 
+    std::vector<std::vector<TF1*>> run_adc_sum_hist1d_gauss_fit_list;
+    std::vector<TF1*> run_adc_sum_hist1d_pre_fit_list;
+
+    std::vector<double> gauss_fit_sigma_ranges_left  = {0.3, 0.4, 0.5};
+    std::vector<double> gauss_fit_sigma_ranges_right = {2.0, 2.5, 3.0};
+    if (enable_gaussian_fit) {
+        for (int _hist_index = 0; _hist_index < run_adc_sum_hist1d_list.size(); _hist_index++) {
+            auto* hist = run_adc_sum_hist1d_list[_hist_index];
+            // pre-fit to find the peak position
+            double hist_mean = hist->GetMean();
+            double hist_rms = hist->GetRMS();
+            double fit_min = hist_mean - 1.5 * hist_rms;
+            if (fit_min < 0) fit_min = 0;
+            double fit_max = hist_mean + 1.5 * hist_rms;
+            TF1* pre_fit = new TF1(
+                fmt::format("pre_fit_{}", _hist_index).c_str(),
+                "gaus",
+                fit_min, fit_max
+            );
+            pre_fit->SetParameters(hist->GetMaximum(), hist_mean, hist_rms);
+            hist->Fit(pre_fit, "RQ0");
+            run_adc_sum_hist1d_pre_fit_list.push_back(pre_fit);
+            spdlog::info("Run {}: Pre-fit mean = {}, sigma = {}", _hist_index, pre_fit->GetParameter(1), pre_fit->GetParameter(2));
+            // gaussian fit around the peak
+            for (auto& _fit_left_sigma : gauss_fit_sigma_ranges_left) {
+                for (auto& _fit_right_sigma : gauss_fit_sigma_ranges_right) {
+                    double fit_min = pre_fit->GetParameter(1) - _fit_left_sigma * pre_fit->GetParameter(2);
+                    if (fit_min < 0) fit_min = 0;
+                    double fit_max = pre_fit->GetParameter(1) + _fit_right_sigma * pre_fit->GetParameter(2);
+                    TF1* gauss_fit = new TF1(
+                        fmt::format("gauss_fit_{}_left{}_right{}", _hist_index, _fit_left_sigma, _fit_right_sigma).c_str(),
+                        "gaus",
+                        fit_min, fit_max
+                    );
+                    gauss_fit->SetParameters(pre_fit->GetParameter(0), pre_fit->GetParameter(1), pre_fit->GetParameter(2));
+                    hist->Fit(gauss_fit, "RQ0");
+                    spdlog::info("Run {}: Gaussian fit (left {} sigma, right {} sigma): mean = {}, sigma = {}", 
+                        _hist_index, _fit_left_sigma, _fit_right_sigma,
+                        gauss_fit->GetParameter(1), gauss_fit->GetParameter(2)
+                    );
+                    if (run_adc_sum_hist1d_gauss_fit_list.size() <= _hist_index) {
+                        run_adc_sum_hist1d_gauss_fit_list.emplace_back();
+                    }
+                    run_adc_sum_hist1d_gauss_fit_list[_hist_index].push_back(gauss_fit);
+                } // end of fit right sigma loop
+            } // end of fit left sigma loop
+        } // end of run_adc_sum_hist1d_list loop    
+    } // end of gaussian fit
+
     // * set y axis range
     for (auto* hist : run_adc_sum_hist1d_list) {
         hist->GetYaxis()->SetRangeUser(0, hist_max_bin_value * 1.3);
@@ -387,9 +445,101 @@ int main(int argc, char **argv) {
         } else {
             hist->Draw("HIST SAME");
         }
+        // draw all gaussian fits if enabled
+        if (enable_gaussian_fit) {
+            for (auto* gauss_fit : run_adc_sum_hist1d_gauss_fit_list[_file_index]) {
+                gauss_fit->SetLineColorAlpha(color_list[_file_index % color_list.size()], 0.2);
+                gauss_fit->Draw("SAME");
+            }
+        }
     }
     legend_adc_sum->SetBorderSize(0);
     legend_adc_sum->Draw();
+
+    TCanvas* canvas_mean_adc_sum_vs_energy = new TCanvas("canvas_mean_adc_sum_vs_energy", "Canvas Mean ADC Sum vs Beam Energy", 800, 600);
+    TLegend* legend_mean_adc_sum_vs_energy = new TLegend(0.7, 0.7, 0.89, 0.89);
+    legend_mean_adc_sum_vs_energy->SetBorderSize(0);
+    legend_mean_adc_sum_vs_energy->SetTextSize(0.03);
+
+    // * If gaussian fit enabled, and beam energies provided, make a graph of mean ADC sum vs beam energy
+    if (enable_gaussian_fit && found_run_energies) {
+        TGraphErrors* graph_mean_adc_sum_vs_energy = new TGraphErrors();
+        graph_mean_adc_sum_vs_energy->SetName("graph_mean_adc_sum_vs_energy");
+        graph_mean_adc_sum_vs_energy->SetTitle("Mean ADC Sum vs Beam Energy;Beam Energy (GeV);Mean ADC Sum");
+        for (int _file_index = 0; _file_index < run_adc_sum_hist1d_list.size(); _file_index++) {
+            auto* hist = run_adc_sum_hist1d_list[_file_index];
+            auto* pre_fit = run_adc_sum_hist1d_pre_fit_list[_file_index];
+            double mean_adc_sum = pre_fit->GetParameter(1);
+            double sigma_adc_sum = pre_fit->GetParameter(2);
+            double beam_energy = run_energies[_file_index];
+            graph_mean_adc_sum_vs_energy->SetPoint(_file_index, beam_energy, mean_adc_sum);
+            graph_mean_adc_sum_vs_energy->SetPointError(_file_index, 0, sigma_adc_sum);
+        }
+        // sort the graph by x value (beam energy)
+        graph_mean_adc_sum_vs_energy->Sort();
+        // fit with a linear function
+        TF1* linear_fit = new TF1("linear_fit", "[0] + [1]*x", 0, run_energies[0] * 1.2);
+        linear_fit->SetParameters(0, hist_max_adc_sum / run_energies[0]);
+        graph_mean_adc_sum_vs_energy->Fit(linear_fit, "RQ0");
+        spdlog::info("Mean ADC Sum vs Beam Energy: Linear fit: offset = {}, slope = {}", linear_fit->GetParameter(0), linear_fit->GetParameter(1));
+        
+        graph_mean_adc_sum_vs_energy->SetMarkerStyle(20);
+        graph_mean_adc_sum_vs_energy->SetMarkerSize(1);
+        graph_mean_adc_sum_vs_energy->SetLineColor(kBlue);
+        graph_mean_adc_sum_vs_energy->SetLineWidth(2);
+        graph_mean_adc_sum_vs_energy->Draw("AP");
+        linear_fit->SetLineColor(kRed);
+        linear_fit->SetLineWidth(2);
+        linear_fit->Draw("SAME");
+
+        // print fit result on the legend
+        legend_mean_adc_sum_vs_energy->AddEntry(linear_fit, fmt::format("Fit : offset = {:.1f}, slope = {:.1f}", linear_fit->GetParameter(0), linear_fit->GetParameter(1)).c_str(), "l");
+        legend_mean_adc_sum_vs_energy->Draw();
+    }
+
+    // * Draw resolution vs beam energy if gaussian fit enabled and beam energies provided
+    TCanvas* canvas_resolution_vs_energy = new TCanvas("canvas_resolution_vs_energy", "Canvas Resolution vs Beam Energy", 800, 600);
+    TLegend *legend_resolution_vs_energy = new TLegend(0.7, 0.7, 0.89, 0.89);
+    legend_resolution_vs_energy->SetBorderSize(0);
+    legend_resolution_vs_energy->SetTextSize(0.03);
+    if (enable_gaussian_fit && found_run_energies) {
+        TGraphErrors* graph_resolution_vs_energy = new TGraphErrors();
+        graph_resolution_vs_energy->SetName("graph_resolution_vs_energy");
+        graph_resolution_vs_energy->SetTitle("Resolution vs Beam Energy;Beam Energy (GeV);Resolution");
+        for (int _file_index = 0; _file_index < run_adc_sum_hist1d_list.size(); _file_index++) {
+            auto* hist = run_adc_sum_hist1d_list[_file_index];
+            auto* pre_fit = run_adc_sum_hist1d_pre_fit_list[_file_index];
+            double mean_adc_sum = pre_fit->GetParameter(1);
+            double sigma_adc_sum = pre_fit->GetParameter(2);
+            double resolution = sigma_adc_sum / mean_adc_sum;
+            double beam_energy = run_energies[_file_index];
+            graph_resolution_vs_energy->SetPoint(_file_index, beam_energy, resolution);
+            // assume 1% error on beam energy
+            graph_resolution_vs_energy->SetPointError(_file_index, beam_energy * 0.01, resolution * 0.1);
+        }
+        // sort the graph by x value (beam energy)
+        graph_resolution_vs_energy->Sort();
+        // fit with a function sqrt(a^2/E + b^2/E^2 + c^2)
+        TF1* resolution_fit = new TF1("resolution_fit", "sqrt([0]*[0]/x + [1]*[1]/(x*x) + [2]*[2])", 0, run_energies[0] * 1.2);
+        resolution_fit->SetParameters(0.5, 0.03);
+        graph_resolution_vs_energy->Fit(resolution_fit, "RQ0");
+        spdlog::info("Resolution vs Beam Energy: Fit: a = {}, b = {}", resolution_fit->GetParameter(0), resolution_fit->GetParameter(1));   
+        graph_resolution_vs_energy->SetMarkerStyle(21);
+        graph_resolution_vs_energy->SetMarkerSize(1);
+        graph_resolution_vs_energy->SetLineColor(kBlue);
+        graph_resolution_vs_energy->SetLineWidth(2);
+        graph_resolution_vs_energy->Draw("AP");
+        resolution_fit->SetLineColor(kRed);
+        resolution_fit->SetLineWidth(2);
+        resolution_fit->Draw("SAME");
+
+        // print fit result on the legend
+        legend_resolution_vs_energy->AddEntry(resolution_fit, fmt::format("Fit: a = {:.3f}, b = {:.3f}, c = {:.3f}", resolution_fit->GetParameter(0), resolution_fit->GetParameter(1), resolution_fit->GetParameter(2)).c_str(), "l");
+        legend_resolution_vs_energy->Draw();
+
+        // fix y-axis range to 0.24 to 0.06
+        graph_resolution_vs_energy->GetYaxis()->SetRangeUser(0.06, 0.24);
+    }
 
     // * Save output file
 
@@ -555,6 +705,7 @@ int main(int argc, char **argv) {
     output_root->cd();
 
     // save the adc sum canvas
+    canvas_adc_sum->cd();
     TLatex latex_adc_sum;
     latex_adc_sum.SetTextColor(kGray+2);
     latex_adc_sum.SetNDC();
@@ -575,6 +726,40 @@ int main(int argc, char **argv) {
     latex_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());
     canvas_adc_sum->Write();
     canvas_adc_sum->Close();
+
+    if (enable_gaussian_fit && found_run_energies) {
+        canvas_mean_adc_sum_vs_energy->cd();
+        TLatex mean_adc_sum_vs_energy_latex;
+        mean_adc_sum_vs_energy_latex.SetTextColor(kGray+2);
+        mean_adc_sum_vs_energy_latex.SetNDC();
+        mean_adc_sum_vs_energy_latex.SetTextSize(0.05);
+        mean_adc_sum_vs_energy_latex.SetTextFont(62);
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+        mean_adc_sum_vs_energy_latex.SetTextSize(0.035);
+        mean_adc_sum_vs_energy_latex.SetTextFont(42);
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.76, ("Beam: " + beam_type).c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
+        canvas_mean_adc_sum_vs_energy->Write();
+        canvas_mean_adc_sum_vs_energy->Close();
+    }
+
+    if (enable_gaussian_fit && found_run_energies) {
+        canvas_resolution_vs_energy->cd();
+        TLatex resolution_vs_energy_latex;
+        resolution_vs_energy_latex.SetTextColor(kGray+2);
+        resolution_vs_energy_latex.SetNDC();
+        resolution_vs_energy_latex.SetTextSize(0.05);
+        resolution_vs_energy_latex.SetTextFont(62);
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+        resolution_vs_energy_latex.SetTextSize(0.035);
+        resolution_vs_energy_latex.SetTextFont(42);
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.76, ("Beam: " + beam_type).c_str());
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
+        canvas_resolution_vs_energy->Write();
+        canvas_resolution_vs_energy->Close();
+    }
 
     // TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
     // pedestal_distribution_th2d->Draw("COLZ");

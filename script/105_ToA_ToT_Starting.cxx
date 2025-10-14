@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
                     tot_starting_points_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak);
                 }
                 if (non_zero_toa_count == 1) {
-                    toa_starting_points_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak);
+                    toa_starting_points_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
                 }
 
                 // pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
