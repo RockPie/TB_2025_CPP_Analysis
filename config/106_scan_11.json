@@ -6,11 +6,23 @@
     "beam_type": "Hadron",
     "run_numbers": [
         484,
-        486
+        486,
+        489,
+        490,
+        492,
+        493,
+        494,
+        495
     ],
     "run_energies": [
         200,
-        150
+        150,
+        100,
+        250,
+        350,
+        60,
+        80,
+        300
     ],
-    "enable_gaussian_fit": false
+    "enable_gaussian_fit": true
 }

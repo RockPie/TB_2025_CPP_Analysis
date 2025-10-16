@@ -20,7 +20,7 @@ EOS_DIRS = {
     "labtests":  f"{EOS_BASE}/lab"
 }
 # ---- Load lxplus credentials (username/password in JSON) ----
-CRED_FILE = "config/lxplus.json"
+CRED_FILE = "/Volumes/GeoT7/TB_2025_Oct/config/lxplus.json"
 if not Path(CRED_FILE).exists():
     print(f"[WARN] Missing {CRED_FILE}. 'fetch_ch2g' rule will fail until you create it.")
 

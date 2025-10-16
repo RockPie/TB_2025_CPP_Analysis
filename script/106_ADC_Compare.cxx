@@ -232,6 +232,10 @@ int main(int argc, char **argv) {
         min_run_file_event_count = target_event_number;
         spdlog::info("Using target number of events from config: {}", min_run_file_event_count);
     }
+    // if the target_event_number is -1, go through all events and normalize by number of events
+    if (target_event_number == -1) {
+        spdlog::info("No target number of events specified, using all events");
+    }
 
     std::vector<std::vector<Double_t>*> files_adc_sums;
     for (int _file_index = 0; _file_index < run_files.size(); _file_index++) {
@@ -302,7 +306,16 @@ int main(int argc, char **argv) {
             last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
         }
 
-        for (int _entry = 0; _entry < min_run_file_event_count; _entry++) {
+        auto target_event_count = min_run_file_event_count;
+        if (script_n_events > 0 && script_n_events < min_run_file_event_count
+            && script_n_events < run_file_event_counts[_file_index]) {
+            target_event_count = script_n_events;
+            spdlog::info("Using target number of events from command line: {}", target_event_count);
+        }
+        if (script_n_events > 0 && script_n_events >= min_run_file_event_count) {
+            target_event_count = input_tree->GetEntries();
+        }
+        for (int _entry = 0; _entry < target_event_count; _entry++) {
             input_tree->GetEntry(_entry);
             // process data here
             Double_t adc_sum = 0.0;
@@ -367,6 +380,11 @@ int main(int argc, char **argv) {
             run_adc_sum_hist1d->Fill(adc_sum);
         }
         run_adc_sum_hist1d_list.push_back(run_adc_sum_hist1d);
+        
+        // if script_n_events is -1, normalize by number of events
+        if (target_event_number == -1) {
+            run_adc_sum_hist1d->Scale(1.0 / adc_sums->size());
+        }
         if (run_adc_sum_hist1d->GetMaximum() > hist_max_bin_value) {
             hist_max_bin_value = run_adc_sum_hist1d->GetMaximum();
         }
@@ -375,14 +393,15 @@ int main(int argc, char **argv) {
     std::vector<std::vector<TF1*>> run_adc_sum_hist1d_gauss_fit_list;
     std::vector<TF1*> run_adc_sum_hist1d_pre_fit_list;
 
-    std::vector<double> gauss_fit_sigma_ranges_left  = {0.3, 0.4, 0.5};
+    std::vector<double> gauss_fit_sigma_ranges_left  = {0.15, 0.20, 0.25};
+    std::vector<double> low_energy_gauss_fit_sigma_ranges_left  = {1.0, 1.5, 2.0};
     std::vector<double> gauss_fit_sigma_ranges_right = {2.0, 2.5, 3.0};
     if (enable_gaussian_fit) {
         for (int _hist_index = 0; _hist_index < run_adc_sum_hist1d_list.size(); _hist_index++) {
             auto* hist = run_adc_sum_hist1d_list[_hist_index];
             // pre-fit to find the peak position
             double hist_mean = hist->GetMean();
-            double hist_rms = hist->GetRMS();
+            double hist_rms  = hist->GetRMS();
             double fit_min = hist_mean - 1.5 * hist_rms;
             if (fit_min < 0) fit_min = 0;
             double fit_max = hist_mean + 1.5 * hist_rms;
@@ -395,8 +414,13 @@ int main(int argc, char **argv) {
             hist->Fit(pre_fit, "RQ0");
             run_adc_sum_hist1d_pre_fit_list.push_back(pre_fit);
             spdlog::info("Run {}: Pre-fit mean = {}, sigma = {}", _hist_index, pre_fit->GetParameter(1), pre_fit->GetParameter(2));
+            // choose different fit ranges for low energy runs
+            auto _fit_left_sigma_ranges = gauss_fit_sigma_ranges_left;
+            if (found_run_energies && run_energies[_hist_index] <= 100) {
+                _fit_left_sigma_ranges = low_energy_gauss_fit_sigma_ranges_left;
+            }
             // gaussian fit around the peak
-            for (auto& _fit_left_sigma : gauss_fit_sigma_ranges_left) {
+            for (auto& _fit_left_sigma : _fit_left_sigma_ranges) {
                 for (auto& _fit_right_sigma : gauss_fit_sigma_ranges_right) {
                     double fit_min = pre_fit->GetParameter(1) - _fit_left_sigma * pre_fit->GetParameter(2);
                     if (fit_min < 0) fit_min = 0;
@@ -457,7 +481,7 @@ int main(int argc, char **argv) {
     legend_adc_sum->Draw();
 
     TCanvas* canvas_mean_adc_sum_vs_energy = new TCanvas("canvas_mean_adc_sum_vs_energy", "Canvas Mean ADC Sum vs Beam Energy", 800, 600);
-    TLegend* legend_mean_adc_sum_vs_energy = new TLegend(0.7, 0.7, 0.89, 0.89);
+    TLegend* legend_mean_adc_sum_vs_energy = new TLegend(0.7, 0.12, 0.89, 0.32);
     legend_mean_adc_sum_vs_energy->SetBorderSize(0);
     legend_mean_adc_sum_vs_energy->SetTextSize(0.03);
 
@@ -465,15 +489,33 @@ int main(int argc, char **argv) {
     if (enable_gaussian_fit && found_run_energies) {
         TGraphErrors* graph_mean_adc_sum_vs_energy = new TGraphErrors();
         graph_mean_adc_sum_vs_energy->SetName("graph_mean_adc_sum_vs_energy");
-        graph_mean_adc_sum_vs_energy->SetTitle("Mean ADC Sum vs Beam Energy;Beam Energy (GeV);Mean ADC Sum");
+        graph_mean_adc_sum_vs_energy->SetTitle("");
         for (int _file_index = 0; _file_index < run_adc_sum_hist1d_list.size(); _file_index++) {
             auto* hist = run_adc_sum_hist1d_list[_file_index];
-            auto* pre_fit = run_adc_sum_hist1d_pre_fit_list[_file_index];
-            double mean_adc_sum = pre_fit->GetParameter(1);
-            double sigma_adc_sum = pre_fit->GetParameter(2);
-            double beam_energy = run_energies[_file_index];
-            graph_mean_adc_sum_vs_energy->SetPoint(_file_index, beam_energy, mean_adc_sum);
-            graph_mean_adc_sum_vs_energy->SetPointError(_file_index, 0, sigma_adc_sum);
+            // use all the fitting results to calculate the average mean ADC sum
+            double mean_adc_sum = 0;
+            double mean_adc_sum_err = 0;
+            std::vector<double> mean_adc_sums;
+            int n_fits = run_adc_sum_hist1d_gauss_fit_list[_file_index].size();
+            for (auto* gauss_fit : run_adc_sum_hist1d_gauss_fit_list[_file_index]) {
+                mean_adc_sum += gauss_fit->GetParameter(1);
+                mean_adc_sums.push_back(gauss_fit->GetParameter(1));
+            }
+            if (n_fits > 0) {
+                mean_adc_sum /= n_fits;
+                // calculate standard deviation of the mean_adc_sums
+                double sum_sq_diff = 0;
+                for (const auto& mas : mean_adc_sums) {
+                    sum_sq_diff += (mas - mean_adc_sum) * (mas - mean_adc_sum);
+                }
+                mean_adc_sum_err = std::sqrt(sum_sq_diff / n_fits);
+            } else {
+                mean_adc_sum = 0;
+                mean_adc_sum_err = 0;
+            }
+            // assume 5% error on beam energy
+            graph_mean_adc_sum_vs_energy->SetPoint(_file_index, run_energies[_file_index], mean_adc_sum);
+            graph_mean_adc_sum_vs_energy->SetPointError(_file_index, run_energies[_file_index] * 0.05, mean_adc_sum_err);
         }
         // sort the graph by x value (beam energy)
         graph_mean_adc_sum_vs_energy->Sort();
@@ -487,35 +529,110 @@ int main(int argc, char **argv) {
         graph_mean_adc_sum_vs_energy->SetMarkerSize(1);
         graph_mean_adc_sum_vs_energy->SetLineColor(kBlue);
         graph_mean_adc_sum_vs_energy->SetLineWidth(2);
-        graph_mean_adc_sum_vs_energy->Draw("AP");
+        if (run_energies.size() >= 2) {
+            graph_mean_adc_sum_vs_energy->GetXaxis()->SetRangeUser(40, 400);
+        }
+        
         linear_fit->SetLineColor(kRed);
         linear_fit->SetLineWidth(2);
+
+        // create two plots in the same canvas
+        // ratio 9:1
+        canvas_mean_adc_sum_vs_energy->Divide(1, 2, 0, 0);
+        auto* pad_mean = canvas_mean_adc_sum_vs_energy->cd(1);
+        pad_mean->SetPad(0.0, 0.35, 1.0, 1.0);
+        pad_mean->SetTopMargin(0.08);
+        pad_mean->SetBottomMargin(0.0);
+        pad_mean->SetBorderMode(0);
+        pad_mean->SetFrameBorderMode(0);
+
+        auto* pad_deviation = canvas_mean_adc_sum_vs_energy->cd(2);
+        pad_deviation->SetPad(0.0, 0.0, 1.0, 0.35);
+        pad_deviation->SetTopMargin(0.0);
+        pad_deviation->SetBottomMargin(0.32);
+        pad_deviation->SetBorderMode(0);
+        pad_deviation->SetFrameBorderMode(0);
+        pad_deviation->SetTicks(1, 1);
+
+        pad_mean->cd();
+
+        graph_mean_adc_sum_vs_energy->Draw("AP");
         linear_fit->Draw("SAME");
 
         // print fit result on the legend
         legend_mean_adc_sum_vs_energy->AddEntry(linear_fit, fmt::format("Fit : offset = {:.1f}, slope = {:.1f}", linear_fit->GetParameter(0), linear_fit->GetParameter(1)).c_str(), "l");
         legend_mean_adc_sum_vs_energy->Draw();
+
+        TGraph* nonlinear_deviation = new TGraph();
+        nonlinear_deviation->SetName("nonlinear_deviation");
+        nonlinear_deviation->SetTitle("");
+        for (int i = 0; i < graph_mean_adc_sum_vs_energy->GetN(); i++) {
+            double energy, mean_adc_sum;
+            graph_mean_adc_sum_vs_energy->GetPoint(i, energy, mean_adc_sum);
+            double mean_adc_sum_fit = linear_fit->Eval(energy);
+            double deviation = (mean_adc_sum - mean_adc_sum_fit) / mean_adc_sum_fit * 100;
+            nonlinear_deviation->SetPoint(i, energy, deviation);
+        }
+        nonlinear_deviation->SetMarkerStyle(21);
+        nonlinear_deviation->SetMarkerSize(1);
+        nonlinear_deviation->SetLineColor(kBlue);
+        nonlinear_deviation->SetLineWidth(2);
+        nonlinear_deviation->GetYaxis()->SetRangeUser(-5, 5);
+        // set the x range if beam energies provided
+        if (found_run_energies) {
+            nonlinear_deviation->GetXaxis()->SetRangeUser(40, 400);
+        }
+        // draw a horizontal line at y=0
+        
+        pad_deviation->cd();
+        nonlinear_deviation->Draw("AP");
+        TF1* line_y0 = new TF1("line_y0", "0", 0, run_energies[0] * 1.2);
+        line_y0->SetLineColor(kRed);
+        line_y0->SetLineWidth(2);
+        line_y0->SetLineStyle(2);
+        line_y0->Draw("SAME");
     }
 
     // * Draw resolution vs beam energy if gaussian fit enabled and beam energies provided
     TCanvas* canvas_resolution_vs_energy = new TCanvas("canvas_resolution_vs_energy", "Canvas Resolution vs Beam Energy", 800, 600);
-    TLegend *legend_resolution_vs_energy = new TLegend(0.7, 0.7, 0.89, 0.89);
+    TLegend *legend_resolution_vs_energy = new TLegend(0.12, 0.12, 0.4, 0.3);
     legend_resolution_vs_energy->SetBorderSize(0);
     legend_resolution_vs_energy->SetTextSize(0.03);
     if (enable_gaussian_fit && found_run_energies) {
         TGraphErrors* graph_resolution_vs_energy = new TGraphErrors();
         graph_resolution_vs_energy->SetName("graph_resolution_vs_energy");
-        graph_resolution_vs_energy->SetTitle("Resolution vs Beam Energy;Beam Energy (GeV);Resolution");
+        graph_resolution_vs_energy->SetTitle("");
         for (int _file_index = 0; _file_index < run_adc_sum_hist1d_list.size(); _file_index++) {
             auto* hist = run_adc_sum_hist1d_list[_file_index];
-            auto* pre_fit = run_adc_sum_hist1d_pre_fit_list[_file_index];
-            double mean_adc_sum = pre_fit->GetParameter(1);
-            double sigma_adc_sum = pre_fit->GetParameter(2);
-            double resolution = sigma_adc_sum / mean_adc_sum;
-            double beam_energy = run_energies[_file_index];
-            graph_resolution_vs_energy->SetPoint(_file_index, beam_energy, resolution);
-            // assume 1% error on beam energy
-            graph_resolution_vs_energy->SetPointError(_file_index, beam_energy * 0.01, resolution * 0.1);
+            // use all the fitting results to calculate the average resolution
+            double resolution = 0;
+            double resolution_err = 0;
+            std::vector<double> resolutions;
+
+            int n_fits = run_adc_sum_hist1d_gauss_fit_list[_file_index].size();
+            for (auto* gauss_fit : run_adc_sum_hist1d_gauss_fit_list[_file_index]) {
+                double sigma = gauss_fit->GetParameter(2);
+                double mean = gauss_fit->GetParameter(1);
+                if (mean != 0) {
+                    resolution += sigma / mean;
+                }
+                resolutions.push_back(sigma / mean);
+            }
+            if (n_fits > 0) {
+                resolution /= n_fits;
+                // calculate standard deviation of the resolutions
+                double sum_sq_diff = 0;
+                for (const auto& res : resolutions) {
+                    sum_sq_diff += (res - resolution) * (res - resolution);
+                }
+                resolution_err = std::sqrt(sum_sq_diff / n_fits);
+            } else {
+                resolution = 0;
+                resolution_err = 0;
+            }
+            // assume 5% error on beam energy
+            graph_resolution_vs_energy->SetPoint(_file_index, run_energies[_file_index], resolution);
+            graph_resolution_vs_energy->SetPointError(_file_index, run_energies[_file_index] * 0.05, resolution_err);
         }
         // sort the graph by x value (beam energy)
         graph_resolution_vs_energy->Sort();
@@ -540,159 +657,6 @@ int main(int argc, char **argv) {
         // fix y-axis range to 0.24 to 0.06
         graph_resolution_vs_energy->GetYaxis()->SetRangeUser(0.06, 0.24);
     }
-
-    // * Save output file
-
-
-    // TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
-    // pedestal_distribution_th2d->SetStats(0);
-    // pedestal_distribution_th2d->SetTitle("");
-
-    // TH2D* peak_distribution_th2d = new TH2D("peak_distribution", "Peak Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 1024);
-    // peak_distribution_th2d->SetStats(0);
-    // peak_distribution_th2d->SetTitle("");
-
-    // std::vector<double> event_adc_sum_list;
-    // event_adc_sum_list.reserve(entry_max);
-    // std::vector<double> event_adc_sum_list_copy;
-    // event_adc_sum_list.reserve(entry_max);
-    // // start event loop
-    // for (int entry = 0; entry < entry_max; entry++) {
-    //     input_tree->GetEntry(entry);
-    //     double adc_sum_all = 0;
-    //     for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-    //         // channel loop
-    //         for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-    //             int channel_index_in_h2g = channel % 76;
-    //             int channel_index_in_h2g_half = channel_index_in_h2g % 38;
-    //             int asic_id = channel / 76;
-    //             int half_id = channel_index_in_h2g / 38;
-
-    //             if (vldb_id == 0 && asic_id == 1)
-    //                 continue;
-                
-    //             if (channel_index_in_h2g_half == 19)
-    //                 continue;
-    //             if (channel_index_in_h2g_half == 0)
-    //                 continue;
-
-    //             int channel_index_no_CM_Calib = channel_index_in_h2g_half;
-                
-    //             if (channel_index_in_h2g_half > 19)
-    //                 channel_index_no_CM_Calib -= 2;
-    //             else if (channel_index_in_h2g_half > 0)
-    //                 channel_index_no_CM_Calib -= 1;
-
-    //             int channel_number_valid = asic_id * 72 + half_id * 36 + (channel_index_no_CM_Calib);
-
-    //             // pedestal to be the average of the smallest 2 of the first 4 samples
-    //             UInt_t adc_pedestal = 1024;
-    //             std::vector<UInt_t> adc_samples;
-    //             UInt_t adc_peak = 0;
-    //             for (int sample = 0; sample < machine_gun_samples; sample++) {
-    //                 auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
-    //                 adc_samples.push_back(adc);
-    //                 if (adc > adc_peak) {
-    //                     adc_peak = adc;
-    //                 }
-    //             }
-    //             std::sort(adc_samples.begin(), adc_samples.end());
-    //             adc_pedestal = (adc_samples[0] + adc_samples[1]) / 2;
-
-    //             auto adc_peak_subtracted = int(adc_peak) - int(adc_pedestal);
-    //             if (adc_peak_subtracted < 0) {
-    //                 adc_peak_subtracted = 0;
-    //             }
-
-    //             pedestal_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_pedestal);
-    //             peak_distribution_th2d->Fill(vldb_id * FPGA_CHANNEL_NUMBER_VALID + channel_number_valid, adc_peak_subtracted);
-
-    //             adc_sum_all += adc_peak_subtracted;
-    //         } // end of channel loop
-    //     } // end of vldb loop
-    //     event_adc_sum_list.push_back(adc_sum_all);
-    //     event_adc_sum_list_copy.push_back(adc_sum_all);
-    // } // end of event loop
-
-    // // calculate the 90% max of all adc sums
-    // // sort the adc sums
-    // if (event_adc_sum_list.empty()) {
-    //     spdlog::warn("No events processed, using default ADC sum range.");
-    //     event_adc_sum_list.push_back(0.0);
-    // }
-    // std::sort(event_adc_sum_list.begin(), event_adc_sum_list.end());
-    // // get the 90% max
-
-    // double adc_sum_max = event_adc_sum_list[std::min(static_cast<size_t>(event_adc_sum_list.size() * 0.9), event_adc_sum_list.size() - 1)];
-    // adc_sum_max = adc_sum_max * 1.3; // add 30% margin
-    // // make 10 histograms each for 1/10 of the events
-    // std::vector<TH1D*> run_adc_sum_partial_hist1d_list;
-
-    // spdlog::info("ADC sum max: {}", adc_sum_max);
-
-    // TH1D* run_adc_sum_all_hist1d = new TH1D("run_adc_sum_all", "Run ADC Sum All;ADC Sum;Counts", 256, 0, adc_sum_max);
-    // run_adc_sum_all_hist1d->SetStats(0);
-    // run_adc_sum_all_hist1d->SetTitle("");
-
-    // double pre_fit_mean = run_adc_sum_all_hist1d->GetMean();
-    // double pre_fit_sigma = run_adc_sum_all_hist1d->GetRMS();
-    // double fit_min = std::max(0.0, pre_fit_mean - 2 * pre_fit_sigma);
-    // double fit_max = std::min(adc_sum_max, pre_fit_mean + 2 * pre_fit_sigma);
-
-    // TF1* gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
-    // gaus_fit_pre->SetLineColorAlpha(kWhite, 0.0);
-    // run_adc_sum_all_hist1d->Fit(gaus_fit_pre, "RQ");
-
-    // double fit_mean = gaus_fit_pre->GetParameter(1);
-    // double fit_sigma = gaus_fit_pre->GetParameter(2);
-
-    // std::vector<double> fit_sigmas = {2.0, 2.5, 3.0};
-    // std::vector<double> fit_offsets = {0.2, 0.4, 0.6};
-    // std::vector<double> fit_results_means;
-    // std::vector<double> fit_results_sigmas;
-    // for (auto fit_sigma_multiplier : fit_sigmas) {
-    //     for (auto fit_offset_multiplier : fit_offsets) {
-    //         double fit_min_final = std::max(0.0, fit_mean - fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
-    //         double fit_max_final = std::min(adc_sum_max, fit_mean + fit_sigma_multiplier * fit_sigma + fit_offset_multiplier * fit_sigma);
-    //         TF1* gaus_fit_final = new TF1(("gaus_fit_final_" + std::to_string(static_cast<int>(fit_sigma_multiplier * 10)) + "_" + std::to_string(static_cast<int>(fit_offset_multiplier * 10))).c_str(), "gaus", fit_min_final, fit_max_final);
-    //         // set transparency
-    //         gaus_fit_final->SetLineColorAlpha(kPink, 0.2);
-    //         run_adc_sum_all_hist1d->Fit(gaus_fit_final, "RQ+");
-    //         double final_fit_mean = gaus_fit_final->GetParameter(1);
-    //         double final_fit_sigma = gaus_fit_final->GetParameter(2);
-    //         fit_results_means.push_back(final_fit_mean);
-    //         fit_results_sigmas.push_back(final_fit_sigma);
-    //         spdlog::info("Final Fit with sigma range {} and offset {}: mean = {}, sigma = {}", fit_sigma_multiplier, fit_offset_multiplier, final_fit_mean, final_fit_sigma);
-    //     }
-    // }
-
-    // // calculate the average of the fit results
-    // double final_mean = 0.0;
-    // double final_sigma = 0.0;
-    // double final_mean_error = 0.0;
-    // double final_sigma_error = 0.0;
-    // if (!fit_results_means.empty()) {
-    //     final_mean = std::accumulate(fit_results_means.begin(), fit_results_means.end(), 0.0) / fit_results_means.size();
-    //     final_sigma = std::accumulate(fit_results_sigmas.begin(), fit_results_sigmas.end(), 0.0) / fit_results_sigmas.size();
-    // } else {
-    //     final_mean = fit_mean;
-    //     final_sigma = fit_sigma;
-    // }
-    // if (fit_results_means.size() > 1) {
-    //     double mean_variance = 0.0;
-    //     double sigma_variance = 0.0;
-    //     for (size_t i = 0; i < fit_results_means.size(); i++) {
-    //         mean_variance += (fit_results_means[i] - final_mean) * (fit_results_means[i] - final_mean);
-    //         sigma_variance += (fit_results_sigmas[i] - final_sigma) * (fit_results_sigmas[i] - final_sigma);
-    //     }
-    //     mean_variance /= (fit_results_means.size() - 1);
-    //     sigma_variance /= (fit_results_sigmas.size() - 1);
-    //     final_mean_error = std::sqrt(mean_variance / fit_results_means.size());
-    //     final_sigma_error = std::sqrt(sigma_variance / fit_results_sigmas.size());
-    // } else {
-    //     final_mean_error = gaus_fit_pre->GetParError(1);
-    //     final_sigma_error = gaus_fit_pre->GetParError(2);
-    // }
 
     auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
     if (output_root->IsZombie()) {
@@ -738,8 +702,10 @@ int main(int argc, char **argv) {
         mean_adc_sum_vs_energy_latex.SetTextSize(0.035);
         mean_adc_sum_vs_energy_latex.SetTextFont(42);
         mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.76, ("Beam: " + beam_type).c_str());
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.76, config_description.c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.72, ("Beam: " + beam_type).c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.68, date_stream.str().c_str());
+
         canvas_mean_adc_sum_vs_energy->Write();
         canvas_mean_adc_sum_vs_energy->Close();
     }
@@ -755,102 +721,12 @@ int main(int argc, char **argv) {
         resolution_vs_energy_latex.SetTextSize(0.035);
         resolution_vs_energy_latex.SetTextFont(42);
         resolution_vs_energy_latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-        resolution_vs_energy_latex.DrawLatex(0.12, 0.76, ("Beam: " + beam_type).c_str());
-        resolution_vs_energy_latex.DrawLatex(0.12, 0.72, date_stream.str().c_str());
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.76, config_description.c_str());
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.72, ("Beam: " + beam_type).c_str());
+        resolution_vs_energy_latex.DrawLatex(0.12, 0.68, date_stream.str().c_str());
         canvas_resolution_vs_energy->Write();
         canvas_resolution_vs_energy->Close();
     }
-
-    // TCanvas *pedestal_distribution_th2d_canvas = new TCanvas("pedestal_distribution_canvas", "pedestal_distribution_canvas", 1200, 600);
-    // pedestal_distribution_th2d->Draw("COLZ");
-    // pedestal_distribution_th2d_canvas->SetLogz();
-
-    // TLatex latex_pedestal;
-    // latex_pedestal.SetTextColor(kGray+2);
-    // latex_pedestal.SetNDC();
-    // latex_pedestal.SetTextSize(0.05);
-    // latex_pedestal.SetTextFont(62);
-    // latex_pedestal.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    // latex_pedestal.SetTextSize(0.035);
-    // latex_pedestal.SetTextFont(42);
-    // latex_pedestal.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // // write run number, date time
-    // auto t = std::time(nullptr);
-    // auto tm = *std::localtime(&t);
-    // std::ostringstream date_stream;
-    // date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    // latex_pedestal.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    // latex_pedestal.DrawLatex(0.12, 0.72, "Pedestal Distribution");
-    // latex_pedestal.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    // pedestal_distribution_th2d_canvas->Write();
-    // pedestal_distribution_th2d_canvas->Close();
-
-    // TCanvas *peak_distribution_th2d_canvas = new TCanvas("peak_distribution_canvas", "peak_distribution_canvas", 1200, 600);
-    // peak_distribution_th2d->Draw("COLZ");
-    // peak_distribution_th2d_canvas->SetLogz();
-    // TLatex latex_peak;
-    // latex_peak.SetTextColor(kGray+2);
-    // latex_peak.SetNDC();
-    // latex_peak.SetTextSize(0.05);
-    // latex_peak.SetTextFont(62);
-    // latex_peak.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    // latex_peak.SetTextSize(0.035);
-    // latex_peak.SetTextFont(42);
-    // latex_peak.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // // write run number, date time
-    // latex_peak.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    // latex_peak.DrawLatex(0.12, 0.72, "Peak Distribution");
-    // latex_peak.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    // peak_distribution_th2d_canvas->Write();
-    // peak_distribution_th2d_canvas->Close();
-
-    // TCanvas *run_adc_sum_canvas = new TCanvas("run_adc_sum_all_canvas", "run_adc_sum_all_canvas", 800, 600);
-    // // draw all the partial histograms in one canvas
-    // run_adc_sum_all_hist1d->SetLineColor(kBlack);
-    // run_adc_sum_all_hist1d->SetLineWidth(2);
-    // run_adc_sum_all_hist1d->Draw("HIST");
-    // TLegend *run_adc_sum_legend = new TLegend(0.80, 0.65, 0.89, 0.89);
-    // run_adc_sum_legend->SetBorderSize(0);
-    // run_adc_sum_legend->SetFillStyle(0);
-    // run_adc_sum_legend->SetTextFont(42);
-    // run_adc_sum_legend->SetTextSize(0.02);
-    // run_adc_sum_legend->AddEntry(run_adc_sum_all_hist1d, "All Events", "l");
-
-    // for (int i = 0; i < n_partial_hist; i++) {
-    //     auto hist = run_adc_sum_partial_hist1d_list[i];
-    //     hist->SetLineColor(kBlue + i * 2);
-    //     hist->SetLineWidth(1);
-    //     hist->Draw("HIST SAME");
-    //     run_adc_sum_legend->AddEntry(hist, ("Partial " + std::to_string(i)).c_str(), "l");
-    // }
-    // run_adc_sum_legend->Draw();
-    // TLatex latex_fit;
-    // latex_fit.SetTextColor(kRed);
-    // latex_fit.SetNDC();
-    // latex_fit.SetTextSize(0.03);
-    // latex_fit.SetTextFont(42);
-    // latex_fit.DrawLatex(0.60, 0.60, ("Fit Mean: " + std::to_string(final_mean)).c_str());
-    // latex_fit.DrawLatex(
-    //     0.60, 0.55, 
-    //     ("Fit Sigma: " + std::to_string(final_sigma) + 
-    //     " (" + std::to_string(static_cast<int>(final_sigma / final_mean * 10000) / 100.0) + "%)").c_str()
-    // );
-    // // write run number
-    // TLatex latex_run_adc_sum;
-    // latex_run_adc_sum.SetTextColor(kGray+2);
-    // latex_run_adc_sum.SetNDC();
-    // latex_run_adc_sum.SetTextSize(0.05);
-    // latex_run_adc_sum.SetTextFont(62);
-    // latex_run_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
-    // latex_run_adc_sum.SetTextSize(0.035);
-    // latex_run_adc_sum.SetTextFont(42);
-    // latex_run_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-    // // write run number, date time
-    // latex_run_adc_sum.DrawLatex(0.12, 0.76, (std::string("Run ") + script_input_run_number).c_str());
-    // latex_run_adc_sum.DrawLatex(0.12, 0.72, "Run ADC Sum");
-    // latex_run_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());    
-    // run_adc_sum_canvas->Write();
-    // run_adc_sum_canvas->Close();
 
     output_root->Close();
 

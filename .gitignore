@@ -11,6 +11,7 @@
 CMakeCache.txt
 .zshrc_local
 config/lxplus.json
+config/tb-2025-oct-automation-53c24706c7ea.json
 
 # ignore dump folder
 dump/
