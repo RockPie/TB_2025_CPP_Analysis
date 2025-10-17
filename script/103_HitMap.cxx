@@ -1,8 +1,6 @@
 #include <fstream>
 #include "H2GCROC_Common.hxx"
 
-
-
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
     std::string script_input_file, script_output_file;

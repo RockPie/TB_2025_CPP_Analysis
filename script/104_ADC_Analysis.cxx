@@ -234,19 +234,21 @@ int main(int argc, char **argv) {
 
                 // pedestal to be the average of the smallest 2 of the first 4 samples
                 double adc_pedestal = 0;
-                std::vector<int> adc_samples;
+                std::vector<int> adc_samples_pedestal;
                 double adc_peak = 0;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
-                    adc_samples.push_back(adc);
+                    if (sample < 3) {
+                        adc_samples_pedestal.push_back(adc);
+                    }
                     auto adc_double = static_cast<double>(adc);
                     if (adc_double > adc_peak) {
                         adc_peak = adc_double;
                     }
                 }
-                pedestal_subtraction_2minoffirst3(adc_samples, adc_pedestal);
+                auto pedestal = pedestal_median_of_first3(adc_samples_pedestal);
 
-                double adc_peak_subtracted = adc_peak - adc_pedestal;
+                double adc_peak_subtracted = adc_peak - pedestal;
                 if (adc_peak_subtracted < 0) {
                     adc_peak_subtracted = 0;
                 }

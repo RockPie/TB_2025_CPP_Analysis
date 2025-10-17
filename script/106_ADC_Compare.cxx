@@ -70,6 +70,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> run_labels;
     std::string beam_type;
     std::string config_description;
+    bool use_peak_integral = false;
     bool enable_gaussian_fit = false;
     int target_event_number = -1;
     bool found_run_energies = false;
@@ -86,6 +87,9 @@ int main(int argc, char **argv) {
         }
         if (config_json.contains("enable_gaussian_fit")) {
             enable_gaussian_fit = config_json.at("enable_gaussian_fit").get<bool>();
+        }
+        if (config_json.contains("use_peak_integral")) {
+            use_peak_integral = config_json.at("use_peak_integral").get<bool>();
         }
         beam_type = config_json.at("beam_type").get<std::string>();
         config_description = config_json.at("description").get<std::string>();
@@ -141,6 +145,8 @@ int main(int argc, char **argv) {
     // print configuration
     spdlog::info("Script version: {}", script_version);
     spdlog::info("Run numbers: {}", fmt::join(run_numbers, ", "));
+    if (use_peak_integral)
+        spdlog::info("Using peak integral for ADC sum");
     spdlog::info("Beam type: {}", beam_type);
     if (found_run_energies)
         spdlog::info("Run energies: {}", fmt::join(run_energies, ", "));
@@ -319,27 +325,54 @@ int main(int argc, char **argv) {
             input_tree->GetEntry(_entry);
             // process data here
             Double_t adc_sum = 0.0;
-            for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-                for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                    double adc_max = 0;
-                    double adc_pedestal = 0;
-                    std::vector<int> adc_samples;
-                    adc_samples.reserve(machine_gun_samples);
-                    for (int sample = 0; sample < machine_gun_samples; sample++) {
-                        auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
-                        adc_samples.push_back(adc_value);
-                        auto adc_value_double = double(adc_value);
-                        if (adc_value_double > adc_max) {
-                            adc_max = adc_value_double;
+            if (use_peak_integral) {
+                for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+                    for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                        double adc_integral = 0;
+                        double adc_pedestal = 0;
+                        std::vector<int> adc_pedestal_samples;
+                        for (int sample = 0; sample < machine_gun_samples; sample++) {
+                            auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
+                            if (sample < 3) {
+                                adc_pedestal_samples.push_back(adc_value);
+                            }
+                            adc_integral += double(adc_value);
+                        } // end of sample loop
+                        // calculate pedestal as average of the smallest 2 samples among first 3 samples
+                        auto pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                        adc_integral -= pedestal * machine_gun_samples;
+                        if (adc_integral <= 0) {
+                            continue;
                         }
-                    } // end of sample loop
-                    // calculate pedestal as average of the smallest 2 samples among first 3 samples
-                    pedestal_subtraction_2minoffirst3(adc_samples, adc_pedestal);
-                    if (adc_max <= adc_pedestal) {
-                        continue;
+                        // spdlog::debug("Event {}: VLDB {} Channel {}: Pedestal = {}, Integral = {}", _entry, vldb_id, channel, pedestal, adc_integral);
+                        adc_sum += Double_t(adc_integral);
                     }
-                    // spdlog::debug("Event {}: VLDB {} Channel {}: Pedestal = {}, Peak = {}", _entry, vldb_id, channel, adc_pedestal, adc_max);
-                    adc_sum += Double_t(adc_max - adc_pedestal);
+                }
+            } else {
+                for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+                    for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                        double adc_max = 0;
+                        double adc_pedestal = 0;
+                        std::vector<int> adc_pedestal_samples;
+                        for (int sample = 0; sample < machine_gun_samples; sample++) {
+                            auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
+                            if (sample < 3) {
+                                adc_pedestal_samples.push_back(adc_value);
+                            }
+                            auto adc_value_double = double(adc_value);
+                            if (adc_value_double > adc_max) {
+                                adc_max = adc_value_double;
+                            }
+                        } // end of sample loop
+                        // calculate pedestal as average of the smallest 2 samples among first 3 samples
+                        auto pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                        if (adc_max <= adc_pedestal) {
+                            continue;
+                        }
+                        
+                        // spdlog::debug("Event {}: VLDB {} Channel {}: Pedestal = {}, Peak = {}", _entry, vldb_id, channel, adc_pedestal, adc_max);
+                        adc_sum += Double_t(adc_max) - Double_t(pedestal);
+                    }
                 } // end of channel loop
             } // end of vldb_id loop
             // spdlog::info("Event {}: ADC sum = {}", _entry, adc_sum);
@@ -481,12 +514,18 @@ int main(int argc, char **argv) {
     legend_adc_sum->Draw();
 
     TCanvas* canvas_mean_adc_sum_vs_energy = new TCanvas("canvas_mean_adc_sum_vs_energy", "Canvas Mean ADC Sum vs Beam Energy", 800, 600);
-    TLegend* legend_mean_adc_sum_vs_energy = new TLegend(0.7, 0.12, 0.89, 0.32);
-    legend_mean_adc_sum_vs_energy->SetBorderSize(0);
-    legend_mean_adc_sum_vs_energy->SetTextSize(0.03);
 
     // * If gaussian fit enabled, and beam energies provided, make a graph of mean ADC sum vs beam energy
     if (enable_gaussian_fit && found_run_energies) {
+        const double xmin = 40;
+        const double xmax = 400;
+        const Int_t kFont = 42;
+        const float labelSize = 0.045;   // 刻度文字
+        const float titleSize = 0.050;   // 轴标题
+        const float yTitleOffsetTop = 1.15;
+        const float yTitleOffsetBot = 1.10;
+        const float xTitleOffsetBot = 1.10;
+        const float bottomZoomRatio = 0.5;
         TGraphErrors* graph_mean_adc_sum_vs_energy = new TGraphErrors();
         graph_mean_adc_sum_vs_energy->SetName("graph_mean_adc_sum_vs_energy");
         graph_mean_adc_sum_vs_energy->SetTitle("");
@@ -542,26 +581,87 @@ int main(int argc, char **argv) {
         auto* pad_mean = canvas_mean_adc_sum_vs_energy->cd(1);
         pad_mean->SetPad(0.0, 0.35, 1.0, 1.0);
         pad_mean->SetTopMargin(0.08);
-        pad_mean->SetBottomMargin(0.0);
+        pad_mean->SetBottomMargin(0);
+        pad_mean->SetLeftMargin(0.12);
+        pad_mean->SetRightMargin(0.04);
         pad_mean->SetBorderMode(0);
         pad_mean->SetFrameBorderMode(0);
+        pad_mean->SetTicks(1,1);
 
-        auto* pad_deviation = canvas_mean_adc_sum_vs_energy->cd(2);
-        pad_deviation->SetPad(0.0, 0.0, 1.0, 0.35);
-        pad_deviation->SetTopMargin(0.0);
-        pad_deviation->SetBottomMargin(0.32);
-        pad_deviation->SetBorderMode(0);
-        pad_deviation->SetFrameBorderMode(0);
-        pad_deviation->SetTicks(1, 1);
+        auto* pad_dev = canvas_mean_adc_sum_vs_energy->cd(2);
+        pad_dev->SetPad(0.0, 0.0, 1.0, 0.35);
+        pad_dev->SetTopMargin(0);
+        pad_dev->SetBottomMargin(0.35);
+        pad_dev->SetLeftMargin(0.12);
+        pad_dev->SetRightMargin(0.04);
+        pad_dev->SetBorderMode(0);
+        pad_dev->SetFrameBorderMode(0);
+        pad_dev->SetTicks(1,1);
 
         pad_mean->cd();
 
+        graph_mean_adc_sum_vs_energy->SetMarkerStyle(20);
+        graph_mean_adc_sum_vs_energy->SetMarkerSize(1.0);
+        graph_mean_adc_sum_vs_energy->SetLineWidth(2);
+        graph_mean_adc_sum_vs_energy->SetLineColor(kBlue);
+
         graph_mean_adc_sum_vs_energy->Draw("AP");
+
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetTitle("Mean ADC sum");
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetTitleFont(kFont);
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetLabelFont(kFont);
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetTitleSize(titleSize);
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetLabelSize(labelSize);
+        graph_mean_adc_sum_vs_energy->GetYaxis()->SetTitleOffset(yTitleOffsetTop);
+
+        graph_mean_adc_sum_vs_energy->GetXaxis()->SetLimits(xmin, xmax);
+        graph_mean_adc_sum_vs_energy->GetXaxis()->SetRangeUser(xmin, xmax);
+        graph_mean_adc_sum_vs_energy->GetXaxis()->SetLabelSize(0);   // 隐藏上图 x 刻度文字
+        graph_mean_adc_sum_vs_energy->GetXaxis()->SetTitleSize(0);   // 隐藏上图 x 轴标题
+
+        linear_fit->SetRange(xmin, xmax);
+        linear_fit->SetLineColor(kRed);
+        linear_fit->SetLineWidth(2);
         linear_fit->Draw("SAME");
 
-        // print fit result on the legend
-        legend_mean_adc_sum_vs_energy->AddEntry(linear_fit, fmt::format("Fit : offset = {:.1f}, slope = {:.1f}", linear_fit->GetParameter(0), linear_fit->GetParameter(1)).c_str(), "l");
-        legend_mean_adc_sum_vs_energy->Draw();
+        TLegend* leg = new TLegend(0.45, 0.12, 0.88, 0.32, "", "brNDC");
+        leg->SetBorderSize(0);
+        leg->SetFillStyle(0);
+        leg->SetTextFont(kFont);
+        leg->SetTextSize(0.040);
+        leg->AddEntry(linear_fit,
+                    fmt::format("Fit: offset = {:.1f}, slope = {:.1f}",
+                                linear_fit->GetParameter(0), linear_fit->GetParameter(1)).c_str(),
+                    "l");
+        leg->Draw();
+
+        
+        
+        pad_dev->cd();
+
+        // draw an empty graph to set axis ranges
+        TGraph* empty_graph = new TGraph();
+        empty_graph->SetPoint(0, xmin, -5);
+        empty_graph->SetPoint(1, xmax, 5);
+        empty_graph->GetXaxis()->SetLimits(xmin, xmax);
+        empty_graph->GetXaxis()->SetRangeUser(xmin, xmax);
+        empty_graph->GetYaxis()->SetRangeUser(-5, 5);
+        empty_graph->Draw("AP");
+        empty_graph->GetXaxis()->SetTitle("Beam energy [GeV]");
+        empty_graph->GetYaxis()->SetTitle("Deviation [%]");
+        // show less y ticks
+        empty_graph->GetYaxis()->SetNdivisions(505);
+        empty_graph->GetXaxis()->SetTitleFont(kFont);
+        empty_graph->GetXaxis()->SetLabelFont(kFont);
+        empty_graph->GetXaxis()->SetTitleSize(titleSize/bottomZoomRatio);
+        empty_graph->GetXaxis()->SetLabelSize(labelSize/bottomZoomRatio);
+        empty_graph->GetXaxis()->SetTitleOffset(xTitleOffsetBot);
+        empty_graph->GetYaxis()->SetTitleFont(kFont);
+        empty_graph->GetYaxis()->SetLabelFont(kFont);
+        empty_graph->GetYaxis()->SetTitleSize(titleSize/bottomZoomRatio);
+        empty_graph->GetYaxis()->SetLabelSize(labelSize/bottomZoomRatio);
+        // empty_graph->GetYaxis()->SetTitleOffset(yTitleOffsetBot);
+
 
         TGraph* nonlinear_deviation = new TGraph();
         nonlinear_deviation->SetName("nonlinear_deviation");
@@ -580,16 +680,37 @@ int main(int argc, char **argv) {
         nonlinear_deviation->GetYaxis()->SetRangeUser(-5, 5);
         // set the x range if beam energies provided
         if (found_run_energies) {
-            nonlinear_deviation->GetXaxis()->SetRangeUser(40, 400);
+            nonlinear_deviation->GetXaxis()->SetRangeUser(xmin, xmax);
+            nonlinear_deviation->GetXaxis()->SetLimits(xmin, xmax);
         }
+        nonlinear_deviation->SetMarkerStyle(21);
+        nonlinear_deviation->SetMarkerSize(1.0);
+        nonlinear_deviation->SetLineWidth(2);
+        nonlinear_deviation->SetLineColor(kBlue);
+
+        nonlinear_deviation->Draw("P");
+
+        // nonlinear_deviation->GetXaxis()->SetTitle("Beam energy [GeV]");
+        // nonlinear_deviation->GetYaxis()->SetTitle("Deviation from linear [%]");
+
+        // nonlinear_deviation->GetXaxis()->SetLimits(xmin, xmax);
+        // nonlinear_deviation->GetXaxis()->SetTitleFont(kFont);
+        // nonlinear_deviation->GetXaxis()->SetLabelFont(kFont);
+        // nonlinear_deviation->GetXaxis()->SetTitleSize(titleSize/bottomZoomRatio);
+        // nonlinear_deviation->GetXaxis()->SetLabelSize(labelSize/bottomZoomRatio);
+        // nonlinear_deviation->GetXaxis()->SetTitleOffset(xTitleOffsetBot);
+
+        // nonlinear_deviation->GetYaxis()->SetTitleFont(kFont);
+        // nonlinear_deviation->GetYaxis()->SetLabelFont(kFont);
+        // nonlinear_deviation->GetYaxis()->SetTitleSize(titleSize/bottomZoomRatio);
+        // nonlinear_deviation->GetYaxis()->SetLabelSize(labelSize/bottomZoomRatio);
+        // nonlinear_deviation->GetYaxis()->SetTitleOffset(yTitleOffsetBot);
+        // nonlinear_deviation->GetYaxis()->SetRangeUser(-5, 5);
+
         // draw a horizontal line at y=0
-        
-        pad_deviation->cd();
-        nonlinear_deviation->Draw("AP");
-        TF1* line_y0 = new TF1("line_y0", "0", 0, run_energies[0] * 1.2);
-        line_y0->SetLineColor(kRed);
-        line_y0->SetLineWidth(2);
+        TLine* line_y0 = new TLine(xmin, 0, xmax, 0);
         line_y0->SetLineStyle(2);
+        line_y0->SetLineColor(kBlack);
         line_y0->Draw("SAME");
     }
 
@@ -675,36 +796,40 @@ int main(int argc, char **argv) {
     latex_adc_sum.SetNDC();
     latex_adc_sum.SetTextSize(0.05);
     latex_adc_sum.SetTextFont(62);
-    latex_adc_sum.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+    float text_start_y = 0.85;
+    float text_start_x = 0.12;
+    latex_adc_sum.DrawLatex(text_start_x, text_start_y, annotation_canvas_title.c_str());
     latex_adc_sum.SetTextSize(0.035);
     latex_adc_sum.SetTextFont(42);
-    latex_adc_sum.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
+    latex_adc_sum.DrawLatex(text_start_x, text_start_y - 0.05, annotation_testbeam_title.c_str());
     // write run number, date time
     auto t = std::time(nullptr);
     auto tm = *std::localtime(&t);
     std::ostringstream date_stream;
     date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    latex_adc_sum.DrawLatex(0.12, 0.76, config_description.c_str());
+    latex_adc_sum.DrawLatex(text_start_x, text_start_y - 0.09, config_description.c_str());
     // hardon or electron beam
-    latex_adc_sum.DrawLatex(0.12, 0.72, ("Beam: " + beam_type).c_str());
-    latex_adc_sum.DrawLatex(0.12, 0.68, date_stream.str().c_str());
+    latex_adc_sum.DrawLatex(text_start_x, text_start_y - 0.13, ("Beam: " + beam_type).c_str());
+    latex_adc_sum.DrawLatex(text_start_x, text_start_y - 0.17, date_stream.str().c_str());
     canvas_adc_sum->Write();
     canvas_adc_sum->Close();
 
     if (enable_gaussian_fit && found_run_energies) {
         canvas_mean_adc_sum_vs_energy->cd();
+        text_start_x = 0.13;
+        text_start_y = 0.89;
         TLatex mean_adc_sum_vs_energy_latex;
         mean_adc_sum_vs_energy_latex.SetTextColor(kGray+2);
         mean_adc_sum_vs_energy_latex.SetNDC();
         mean_adc_sum_vs_energy_latex.SetTextSize(0.05);
         mean_adc_sum_vs_energy_latex.SetTextFont(62);
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.85, annotation_canvas_title.c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(text_start_x, text_start_y, annotation_canvas_title.c_str());
         mean_adc_sum_vs_energy_latex.SetTextSize(0.035);
         mean_adc_sum_vs_energy_latex.SetTextFont(42);
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.80, annotation_testbeam_title.c_str());
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.76, config_description.c_str());
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.72, ("Beam: " + beam_type).c_str());
-        mean_adc_sum_vs_energy_latex.DrawLatex(0.12, 0.68, date_stream.str().c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(text_start_x, text_start_y - 0.05, annotation_testbeam_title.c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(text_start_x, text_start_y - 0.09, config_description.c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(text_start_x, text_start_y - 0.13, ("Beam: " + beam_type).c_str());
+        mean_adc_sum_vs_energy_latex.DrawLatex(text_start_x, text_start_y - 0.17, date_stream.str().c_str());
 
         canvas_mean_adc_sum_vs_energy->Write();
         canvas_mean_adc_sum_vs_energy->Close();
