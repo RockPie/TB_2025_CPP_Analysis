@@ -1,0 +1,220 @@
+{
+    "#A8BBA3": {
+        "description": "Testing runs",
+        "run_numbers": [
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            163,
+            164,
+            165,
+            166,
+            167,
+            168,
+            169,
+            170,
+            171,
+            172,
+            173,
+            174,
+            175,
+            176,
+            177,
+            178,
+            179,
+            180,
+            181,
+            182,
+            183,
+            184,
+            185,
+            186,
+            187,
+            188
+        ]
+    },
+    "#A3CCDA":
+    {
+        "description": "ES, 0.05 CC Gain, 54.5 V bias",
+        "run_numbers": [
+            483,
+            484,
+            486,
+            489,
+            490,
+            491,
+            492,
+            493,
+            494,
+            495
+        ]
+    },
+    "#7FC4F0FF": {
+        "description": "BS, 100GeV, Hadron",
+        "run_numbers": [
+            439,
+            440,
+            441,
+            442,
+            443
+        ]
+    },
+    "#90E0EFFF": {
+        "description": "ES, 0.1 CC Gain, 54 V bias, Electron",
+        "run_numbers": [
+            465,
+            466,
+            467,
+            468,
+            470
+        ]
+    },
+    "#BDE3C3FF": {
+        "description": "ES, 0.1 CC Gain, 54.5 V bias, ToT",
+        "run_numbers": [
+            435,
+            436,
+            437,
+            438,
+            445,
+            446,
+            447,
+            448,
+            450,
+            451,
+            452,
+            453,
+            454,
+            455,
+            456,
+            457,
+            458,
+            459
+        ]
+    },
+    "#CFE7FF": {
+        "description": "BS,40/20 GeV, Electron",
+        "run_numbers": [
+            460,
+            461,
+            462,
+            463
+        ]
+    },
+    "#FEE2AD": {
+        "description": "BS, Muon",
+        "run_numbers": [
+            471,
+            472,
+            473,
+            474,
+            475
+        ]
+    },
+    "#D1B2FF": {
+        "description": "Pedestal runs",
+        "run_numbers": [
+            476,
+            477,
+            478,
+            479
+        ]
+    },
+    "#F8F7BA": {
+        "description": "ES, 0.2 CC Gain, 53 V bias",
+        "run_numbers": [
+            294,
+            295,
+            296,
+            297,
+            298,
+            303,
+            304
+        ]
+    },
+    "#FFB4B4": {
+        "description": "ES, 0.2 CC Gain, 53 V bias, ToT",
+        "run_numbers": [
+            413,
+            414,
+            415,
+            416,
+            417,
+            418,
+            419,
+            420,
+            424,
+            425,
+            426,
+            427,
+            428
+        ]
+    },
+    "#EEE6CA": {
+        "description": "ToT tuning",
+        "run_numbers": [
+            429,
+            431,
+            432,
+            433
+        ]
+    },
+    "#F5D2D2": {
+        "description": "ES, 0.1 CC Gain, 53 V bias",
+        "run_numbers": [
+            338,
+            339,
+            340,
+            341,
+            342,
+            343,
+            344,
+            345,
+            346,
+            347,
+            348,
+            349,
+            350
+        ]
+    },
+    "#FFC6FF": {
+        "description": "ES, 0.1 CC Gain, 53.5 V bias",
+        "run_numbers": [
+            357,
+            358,
+            359,
+            360,
+            361,
+            362,
+            363
+        ]
+    },
+    "#D5AAFF": {
+        "description": "ES, 0.1 CC Gain, 54 V bias",
+        "run_numbers": [
+            364,
+            365,
+            366,
+            367,
+            369,
+            370,
+            372
+        ]
+    }
+}

@@ -1,0 +1,294 @@
+import ROOT, os, json, time, math
+
+def draw_run_categorical_bands_scatter(
+    runs,                    # list[int]            —— 原始 run 列表（可重复）
+    y_values,                # list[float]          —— 与 runs 等长
+    run_to_color,            # dict[int]->int       —— run号 -> ROOT 颜色索引
+    output_pdf,              # str                  —— 输出 PDF 路径
+    y_min=1e-6,              # float                —— y 轴最小值（logY 必须 > 0）
+    y_max=1.0,               # float
+    logy=True,               # bool                 —— 是否 logY
+    band_shrink=0.02,        # float                —— 每个色带左右各收缩的比例
+    y_label="Y",             # str                  —— y 轴标题
+    x_label="Run Number",    # str                  —— x 轴标题
+    title_lines=None,        # list[str]            —— 左上多行标题
+    run_to_text=None,        # dict[int]->str       —— “仅第一次出现时”在色带内竖直标注（可选）
+    png_also=True,           # bool                 —— 额外导出 PNG
+    root_also=None,          # Optional[str]        —— 若提供则把 canvas 写入 ROOT 文件
+    rotate_x_labels=True,    # bool                 —— x 轴标签竖排
+    marker_style=20,         # int
+    marker_size=1.2,         # float
+    marker_color=ROOT.kBlack # int
+):
+    assert len(runs) == len(y_values), "runs 与 y_values 长度不一致"
+
+    # 过滤/夹值（logY 不允许 0 或负数）
+    vals = [y_min if (v is None or (isinstance(v, float) and math.isnan(v)) or v <= 0) else float(v)
+            for v in y_values]
+    runs = list(map(int, runs))
+
+    # 分类轴顺序：按出现顺序去重
+    runs_seen, seen = [], set()
+    for r in runs:
+        if r not in seen:
+            runs_seen.append(r); seen.add(r)
+    N = len(runs_seen)
+    if N == 0:
+        raise RuntimeError("空的 run 列表")
+
+    # 画布
+    c = ROOT.TCanvas(f"c_{int(time.time()*1000)}", "QA", 1600, 560)
+    c.SetLeftMargin(0.10)
+    c.SetRightMargin(0.03)
+    c.SetBottomMargin(0.18)
+    c.SetTopMargin(0.10)
+    c.SetLogy(bool(logy))
+
+    # 框架：N 个等宽 bin，x∈[0, N]
+    frame = ROOT.TH2F(f"frame_{int(time.time()*1000)}",
+                      f";{x_label};{y_label}",
+                      N, 0.0, float(N), 10, float(y_min), float(y_max))
+    frame.SetStats(0); frame.SetFillStyle(0); frame.SetLineColor(0)
+    for i, r in enumerate(runs_seen, start=1):
+        frame.GetXaxis().SetBinLabel(i, str(r))
+    if rotate_x_labels:
+        frame.GetXaxis().LabelsOption("v")
+    frame.GetXaxis().SetLabelSize(0.030)
+    frame.GetYaxis().SetTitleOffset(0.7)
+    frame.GetYaxis().SetLabelSize(0.030)
+    frame.Draw("AXIS")
+
+    # 背景色带（保存引用避免 GC）——仅在下一列不一样时写
+    boxes, texts, titles = [], [], []
+    for i, r in enumerate(runs_seen):
+        x1, x2 = float(i), float(i + 1)
+        if band_shrink > 0:
+            s = band_shrink * (x2 - x1)
+            x1 += s; x2 -= s
+
+        col = run_to_color.get(r, ROOT.kGray+1)
+        box = ROOT.TBox(x1, float(y_min), x2, float(y_max))
+        box.SetLineColor(0)
+        box.SetFillStyle(1001)   # 实心，不透明 —— PDF 最稳
+        box.SetFillColor(int(col))
+        box.Draw("same f")
+        boxes.append(box)
+
+        if run_to_text:
+            desc = run_to_text.get(r, "")
+            r_next = runs_seen[i + 1] if i < len(runs_seen) - 1 else None
+            desc_next = run_to_text.get(r_next, "") if r_next is not None else ""
+            if desc_next == "" or desc != desc_next:
+                # skip if this is the left most column to avoid overlap with y axis
+                # if i <= 1:
+                #     continue
+                # printed_desc.add(desc)
+                t = ROOT.TLatex()
+                t.SetTextFont(52)
+                t.SetTextAlign(13)
+                t.SetTextSize(0.025)
+                t.SetTextColor(ROOT.kGray+2)
+                t.SetTextAngle(90)
+                if not logy:
+                    y_0_9 = 0.05
+                else: # calculate the 0.9 position in log scale
+                    y_0_9 = math.exp(math.log(y_min) + 0.05 * (math.log(y_max) - math.log(y_min)))
+                t.DrawLatex(x1 + 0.2*(x2 - x1), y_0_9, str(desc))
+                texts.append(t)
+
+    # 散点（画在 bin 中心）
+    pos_map = {r: i for i, r in enumerate(runs_seen)}
+    g = ROOT.TGraph(len(runs))
+    for i, (r, y) in enumerate(zip(runs, vals)):
+        x = pos_map[r] + 0.5
+        g.SetPoint(i, float(x), float(y))
+    g.SetMarkerStyle(marker_style)
+    g.SetMarkerSize(marker_size)
+    g.SetMarkerColor(marker_color)
+    g.Draw("P SAME")
+
+    if title_lines:
+        t0 = ROOT.TLatex()
+        t0.SetNDC(True)
+        y0 = 0.85
+        for j, line in enumerate(title_lines):
+            t0.SetTextFont(62 if j == 0 else 42)
+            t0.SetTextSize(0.045 if j == 0 else 0.035)
+            t0.DrawLatex(0.12, y0 - 0.045*j, line)
+        titles.append(t0)
+
+    ROOT.gPad.RedrawAxis()
+    c.Update()
+
+    # 输出
+    os.makedirs(os.path.dirname(output_pdf), exist_ok=True)
+    c.SaveAs(output_pdf)
+    if png_also:
+        c.SaveAs(output_pdf.replace(".pdf", ".png"))
+    if root_also:
+        rfdir = os.path.dirname(root_also)
+        if rfdir: os.makedirs(rfdir, exist_ok=True)
+        rf = ROOT.TFile.Open(root_also, "RECREATE")
+        c.Write("canvas")
+        rf.Close()
+
+    # 返回对象，避免被 GC
+    return {
+        "canvas": c,
+        "frame": frame,
+        "graph": g,
+        "boxes": boxes,
+        "texts": texts,
+        "titles": titles,
+        "runs_seen": runs_seen
+    }
+
+folder_201_waveform = "dump/201_Waveform/beamtests"
+list_201_waveform_root_files = [f for f in os.listdir(folder_201_waveform) if f.endswith(".root") and not f.startswith("._")]
+output_folder = "dump/QA_Results"
+output_file_path = os.path.join(output_folder, "QA_201_Waveform_Results.root")
+
+color_json_file = "config/run_color_collection.json"
+color_json = json.load(open(color_json_file, "r"))
+# color map like:     
+    # "#A3CCDA":
+    # {
+    #     "description": "ES, 0.05 CC Gain, 54.5 V bias",
+    #     "run_numbers": [
+    #         484,
+    #         486,
+    #         489,
+    #         490,
+    #         492,
+    #         493,
+    #         494,
+    #         495
+    #     ]
+    # },
+channel_color_map = {}
+for color_hex, run_info in color_json.items():
+    run_list = run_info.get("run_numbers", [])
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    color_code = ROOT.TColor.GetColor(r, g, b)
+    for run_number in run_list:
+        channel_color_map[run_number] = {}
+        channel_color_map[run_number]["color"] = color_code
+    # add description printout
+    description = run_info.get("description", "")
+    channel_color_map[run_number]["description"] = description
+# file name: dump/201_Waveform/beamtests/Run0179.root
+list_201_waveform_run_numbers = []
+for filename in list_201_waveform_root_files:
+    run_number_str = filename.replace("Run", "").replace(".root", "")
+    try:
+        run_number = int(run_number_str)
+        list_201_waveform_run_numbers.append(run_number)
+    except ValueError:
+        continue
+print("Found 201_Waveform root files for run numbers:", list_201_waveform_run_numbers)
+
+list_201_waveform_hamming_code_error_rates = []
+list_201_waveform_toa_valid_fractions = []
+list_201_waveform_kColors = []
+
+# go through each run number and extract QA values
+for run_index in range(len(list_201_waveform_run_numbers)):
+    run_number = list_201_waveform_run_numbers[run_index]
+    root_file_path = os.path.join(folder_201_waveform, f"Run{run_number:04d}.root")
+    input_root = ROOT.TFile.Open(root_file_path, "READ")
+    if not input_root or input_root.IsZombie():
+        print(f"Failed to open root file: {root_file_path}")
+        continue
+
+    hamming_code_error_rate = None
+    toa_valid_fraction = None
+
+    param_hamming = input_root.Get("hamming_code_error_rate")
+    if param_hamming:
+        hamming_code_error_rate = param_hamming.GetVal()
+    
+    param_toa = input_root.Get("toa_valid_fraction")
+    if param_toa:
+        toa_valid_fraction = param_toa.GetVal()
+
+    list_201_waveform_hamming_code_error_rates.append(hamming_code_error_rate)
+    list_201_waveform_toa_valid_fractions.append(toa_valid_fraction)
+    list_201_waveform_kColors.append(channel_color_map.get(run_number, {}).get("color", ROOT.kGray+1))
+    input_root.Close()
+
+    print(f"Run {run_number}: Hamming Code Error Rate = {hamming_code_error_rate}, ToA Valid Fraction = {toa_valid_fraction}")
+
+# sort the lists by run number
+sorted_indices = sorted(range(len(list_201_waveform_run_numbers)), key=lambda i: list_201_waveform_run_numbers[i])
+list_201_waveform_run_numbers = [list_201_waveform_run_numbers[i] for i in sorted_indices]
+list_201_waveform_hamming_code_error_rates = [list_201_waveform_hamming_code_error_rates[i] for i in sorted_indices]
+list_201_waveform_toa_valid_fractions = [list_201_waveform_toa_valid_fractions[i] for i in sorted_indices]
+list_201_waveform_kColors = [list_201_waveform_kColors[i] for i in sorted_indices]
+
+channel_color_map = {}
+for color_hex, run_info in color_json.items():
+    run_list = run_info.get("run_numbers", [])
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    color_code = ROOT.TColor.GetColor(r, g, b)
+    description = run_info.get("description", "")
+    for run_number in run_list:
+        channel_color_map[run_number] = {
+            "color": color_code,
+            "description": description
+        }
+
+# 生成 run->color / run->text 两个 dict
+run_to_color = {r: info["color"] for r, info in channel_color_map.items()}
+run_to_text  = {r: info.get("description","") for r, info in channel_color_map.items()}
+
+# ========= 2) 画第一张：Hamming Code Error Rate =========
+title_lines = [
+    "FoCal-H Prototype 3",
+    "Beam Test 2025 Oct",
+    "Hamming Code Error Rate",
+    time.strftime("Date: %Y-%m-%d")
+]
+out_pdf1 = os.path.join(output_folder, "QA_201_hamming_error_rate.pdf")
+
+draw_run_categorical_bands_scatter(
+    runs=list_201_waveform_run_numbers,
+    y_values=list_201_waveform_hamming_code_error_rates,
+    run_to_color=run_to_color,
+    output_pdf=out_pdf1,
+    y_min=1e-7, y_max=1.0, logy=True,
+    band_shrink=0.00,
+    y_label="Hamming Code Error Rate",
+    x_label="Run Number",
+    title_lines=title_lines,
+    run_to_text=run_to_text,
+    png_also=True,
+    root_also=os.path.join(output_folder, "QA_201_hamming_error_rate.root")
+)
+
+# ========= 3) 画第二张：ToA Valid Fraction（示例）=========
+title_lines2 = [
+    "FoCal-H Prototype 3",
+    "Beam Test 2025 Oct",
+    "ToA Valid Fraction",
+    time.strftime("Date: %Y-%m-%d")
+]
+out_pdf2 = os.path.join(output_folder, "QA_201_toa_valid_fraction.pdf")
+
+draw_run_categorical_bands_scatter(
+    runs=list_201_waveform_run_numbers,
+    y_values=list_201_waveform_toa_valid_fractions,
+    run_to_color=run_to_color,
+    output_pdf=out_pdf2,
+    y_min=0, y_max=1.0, logy=False,
+    band_shrink=0.00,
+    y_label="ToA Valid Fraction",
+    x_label="Run Number",
+    title_lines=title_lines2,
+    run_to_text=run_to_text,
+    png_also=True,
+    root_also=os.path.join(output_folder, "QA_201_toa_valid_fraction.root")
+)

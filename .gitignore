@@ -21,3 +21,4 @@ CRU_RDH_Decoder/
 .vscode/
 CMakeFiles/
 .snakemake/
+.env/

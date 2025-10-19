@@ -1,5 +1,6 @@
 #include <fstream>
 #include <TStyle.h>
+#include <TParameter.h>
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 
@@ -224,16 +225,62 @@ int main(int argc, char **argv) {
         }
     }
 
+    std::vector<TH2D*> h2_adcmax_toa_correlation;
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            int hist_x_bins = 256;
+            int hist_y_bins = 25 * machine_gun_samples;
+            TH2D* h2_adcmax_toa = new TH2D(
+                Form("h2_adcmax_toa_correlation_vldb%d_channel%d", vldb_id, channel),
+                Form("ADC Max vs ToA (VLDB %d, Channel %d);ToA;ADC Max", vldb_id, channel),
+                hist_x_bins, 0, 1024,
+                hist_y_bins, 0, 25 * double(machine_gun_samples)
+            );
+            h2_adcmax_toa_correlation.push_back(h2_adcmax_toa);
+        }
+    }
+
+    // monitor hamming code errors
+    size_t total_hamming_code_errors = 0;
+    TH1I* h1_hamming_code_errors = new TH1I("h1_hamming_code_errors", "Hamming Code Errors per Event;Hamming Code Errors;Counts", 8, 0, 8);
+
+    size_t total_hamming_pass_events = 0;
+    size_t total_non_zero_toa_counts = 0;
+    size_t total_valid_toa_counts = 0;
+
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
+        Int_t hamming_code_errors_in_event = 0;
+        // check hamming code for each VLDB
+        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+            for (int asic_id = 0; asic_id < 2; asic_id++) {
+                for (int half_id = 0; half_id < 2; half_id++) {
+                    auto daqh_value = daqh_list_pools[vldb_id][0][asic_id * 2 + half_id];
+                    auto hamming_code = (daqh_value & 0x00000070) >> 4;
+                    if (hamming_code != 0) {
+                        total_hamming_code_errors++;
+                        hamming_code_errors_in_event++;
+                    }
+                } // half_id
+            } // asic_id
+        } // vldb_id
+        h1_hamming_code_errors->Fill(hamming_code_errors_in_event);
+        if (hamming_code_errors_in_event > 0) {
+            continue;
+        }
+        total_hamming_pass_events++;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
                 const int hist_index = vldb_id * FPGA_CHANNEL_NUMBER + channel;
-                std::vector<int> adc_pedestal_array;
-                int adc_max = 0;
+                std::vector<UInt_t> adc_pedestal_array;
+                UInt_t adc_max = 0;
+                UInt_t toa_max = 0;
+                int toa_max_index = -1;
+                int non_zero_toa_counts = 0;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int hist_index = vldb_id * FPGA_CHANNEL_NUMBER + channel;
-                    int adc_value = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
+                    auto adc_value = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
+                    auto toa_value = val2_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
                     h2_waveforms[hist_index]->Fill(sample, adc_value);
 
                     if (sample < 3) {
@@ -243,18 +290,50 @@ int main(int argc, char **argv) {
                     if (adc_value > adc_max) {
                         adc_max = adc_value;
                     }
+
+                    if (toa_value > toa_max) {
+                        toa_max = toa_value;
+                        toa_max_index = sample;
+                    }
+
+                    if (toa_value != 0) {
+                        non_zero_toa_counts++;
+                        total_non_zero_toa_counts++;
+                    }
                 }
                 auto pedestal_median = pedestal_median_of_first3(adc_pedestal_array);
                 // use max-min as pedestal sigma
                 auto pedestal_sigma = *std::max_element(adc_pedestal_array.begin(), adc_pedestal_array.end()) -
                                       *std::min_element(adc_pedestal_array.begin(), adc_pedestal_array.end());
                 double adc_max_double = static_cast<double>(adc_max);
+                double adc_max_minus_pedestal = adc_max_double - static_cast<double>(pedestal_median);
+
                 h2_pedestal_median_adcmax[hist_index]->Fill(adc_max_double, pedestal_median);
                 h2_pedestal_median_pedestal_sigma[hist_index]->Fill(pedestal_median, pedestal_sigma);
+
+                // handle ToA value
+                if (non_zero_toa_counts == 1 && toa_max != 0) {
+                    total_valid_toa_counts++;
+                    auto toa_value_ns = decode_toa_value_ns(toa_max);
+                    toa_value_ns += static_cast<double>(toa_max_index) * 25.0;  // add the sample offset
+                    // debug: check the toa value
+                    // spdlog::info("Event {}: VLDB {} Channel {}: ToA = {} (raw: {})", entry, vldb_id, channel, toa_value_ns, toa_max);
+                    h2_adcmax_toa_correlation[hist_index]->Fill(adc_max_minus_pedestal, toa_value_ns);
+                }
             }
         }
     }
     input_root->Close();
+
+    // calculate QA values
+    double hamming_code_error_rate = static_cast<double>(total_hamming_code_errors) / static_cast<double>(entry_max) / 4.0;
+    double toa_valid_fraction = static_cast<double>(total_valid_toa_counts) / static_cast<double>(vldb_number * FPGA_CHANNEL_NUMBER * total_hamming_pass_events);
+
+    // print out total non-zero ToA counts and valid ToA counts
+    spdlog::info("Total Hamming code errors rate: {} / {} = {:.6f}%", total_hamming_code_errors, entry_max, static_cast<double>(total_hamming_code_errors) / static_cast<double>(entry_max) * 25.0);
+    spdlog::info("Total non-zero ToA counts: {}", total_non_zero_toa_counts);
+    spdlog::info("Total valid ToA counts (only one non-zero ToA per channel): {}", total_valid_toa_counts);
+    spdlog::info("Valid ToA fraction: {:.2f}%", static_cast<double>(total_valid_toa_counts) / static_cast<double>(total_non_zero_toa_counts) * 100.0);
 
     // * --- Handle output ----------------------------------------------------
     // * ----------------------------------------------------------------------
@@ -297,7 +376,7 @@ int main(int argc, char **argv) {
     canvas_pedestal_adcmax.Update();
     canvas_pedestal_adcmax.Write();
     // save as png file too
-    canvas_pedestal_adcmax.SaveAs((script_output_folder + "/" + script_input_run_number + "_pedestal_median_adcmax.png").c_str());
+    //canvas_pedestal_adcmax.SaveAs((script_output_folder + "/" + script_input_run_number + "_pedestal_median_adcmax.png").c_str());
 
     TCanvas canvas_pedestal_median_pedestal_sigma("canvas_pedestal_median_pedestal_sigma", "Pedestal vs Pedestal Sigma", 1200, 800);
     draw_mosaic_fixed(canvas_pedestal_median_pedestal_sigma, h2_pedestal_median_pedestal_sigma, topo_ped_median);
@@ -306,7 +385,29 @@ int main(int argc, char **argv) {
     canvas_pedestal_median_pedestal_sigma.Update();
     canvas_pedestal_median_pedestal_sigma.Write();
     // save as png file too
-    canvas_pedestal_median_pedestal_sigma.SaveAs((script_output_folder + "/" + script_input_run_number + "_pedestal_median_pedestal_sigma.png").c_str());
+    //canvas_pedestal_median_pedestal_sigma.SaveAs((script_output_folder + "/" + script_input_run_number + "_pedestal_median_pedestal_sigma.png").c_str());
+
+    TCanvas canvas_adcmax_toa_correlation("canvas_adcmax_toa_correlation", "ADC Max vs ToA", 1200, 800);
+    draw_mosaic_fixed(canvas_adcmax_toa_correlation, h2_adcmax_toa_correlation, topo_ped_median);
+    output_root->cd();
+    canvas_adcmax_toa_correlation.Modified();
+    canvas_adcmax_toa_correlation.Update();
+    canvas_adcmax_toa_correlation.Write();
+    // save as png file too
+    //canvas_adcmax_toa_correlation.SaveAs((script_output_folder + "/" + script_input_run_number + "_adcmax_toa_correlation.png").c_str());
+
+    TCanvas canvas_hamming_code_errors("canvas_hamming_code_errors", "Hamming Code Errors per Event", 800, 600);
+    h1_hamming_code_errors->Draw();
+    output_root->cd();
+    canvas_hamming_code_errors.Modified();
+    canvas_hamming_code_errors.Update();
+    canvas_hamming_code_errors.Write();
+
+    // write QA values to the root file as a TParameter
+    TParameter<double> param_hamming_code_error_rate("hamming_code_error_rate", hamming_code_error_rate);
+    param_hamming_code_error_rate.Write();
+    TParameter<double> param_toa_valid_fraction("toa_valid_fraction", toa_valid_fraction);
+    param_toa_valid_fraction.Write();
 
     output_root->Close();
 

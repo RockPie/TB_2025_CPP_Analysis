@@ -37,16 +37,16 @@ inline void pedestal_subtraction_2minoffirst3(std::vector<int>& data, double& pe
     }
 }
 
-inline double pedestal_median_of_first3(std::vector<int>& data) {
+inline double pedestal_median_of_first3(std::vector<UInt_t>& data) {
     if (data.size() < 3) {
         return 0.0;
     }
-    std::vector<int> first3(data.begin(), data.begin() + 3);
+    std::vector<UInt_t> first3(data.begin(), data.begin() + 3);
     std::sort(first3.begin(), first3.end());
     return double(first3[1]);
 }
 
-inline double pedestal_average_of_first3(std::vector<int>& data) {
+inline double pedestal_average_of_first3(std::vector<UInt_t>& data) {
     if (data.size() < 3) {
         return 0.0;
     }
