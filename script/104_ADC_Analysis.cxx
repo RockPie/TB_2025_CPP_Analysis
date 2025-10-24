@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
 
                 // pedestal to be the average of the smallest 2 of the first 4 samples
                 double adc_pedestal = 0;
-                std::vector<int> adc_samples_pedestal;
+                std::vector<UInt_t> adc_samples_pedestal;
                 double adc_peak = 0;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     auto &adc = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];

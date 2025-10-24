@@ -410,6 +410,77 @@ inline double decode_toa_value_ns(UInt_t val2) {
     return part0 * scale0 + part1 * scale1 + part2 * scale2;
 }
 
+inline void toa_manual_correction(int vldb_id, int asic_id, int half_id, UInt_t& toa_max, double& toa_value_ns) {
+    // Apply manual correction to ToA value based on known issues
+    // This is a placeholder for actual correction logic
+    if (vldb_id == 1 && asic_id == 1) {
+        if (toa_max < 260) {
+            toa_value_ns += 25.0;  // correct for the known offset issue
+        }
+    }
+    if (vldb_id == 1 && asic_id == 0) {
+        if (toa_max > 768) {
+            toa_value_ns -= 25.0;  // correct for the known offset issue
+        }
+    }
+    if (vldb_id == 0 && half_id == 0) {
+        if (toa_max > 544) {
+            toa_value_ns -= 25.0;  // correct for the known offset issue
+        }
+    }
+    if (vldb_id == 0 && half_id == 1) {
+        if (toa_max > 780) {
+            toa_value_ns -= 25.0;  // correct for the known offset issue
+        }
+    }
+}
+
+inline double find_closest_toa(const json& timewalk_json, double adc_max) {
+    // Fast checks and one-time extraction
+    auto it_adc = timewalk_json.find("adc_max_minus_pedestal");
+    auto it_toa = timewalk_json.find("toa_ns");
+    if (it_adc == timewalk_json.end() || it_toa == timewalk_json.end()
+        || !it_adc->is_array() || !it_toa->is_array()) {
+        return 0.0;
+    }
+
+    // One conversion (avoid converting per element)
+    // NOTE: This copies once. If you call this many times, pull these out once upstream and
+    // pass the vectors by reference instead.
+    std::vector<double> adc = it_adc->get<std::vector<double>>();
+    std::vector<double> toa = it_toa->get<std::vector<double>>();
+
+    const size_t n = adc.size();
+    if (n == 0 || toa.size() != n) return 0.0;
+
+    // If ADC is sorted (common in lookup tables), do O(log N) search
+    if (std::is_sorted(adc.begin(), adc.end())) {
+        auto it = std::lower_bound(adc.begin(), adc.end(), adc_max);
+        size_t idx;
+        if (it == adc.begin()) {
+            idx = 0;
+        } else if (it == adc.end()) {
+            idx = n - 1;
+        } else {
+            // Pick the closer of neighbors
+            const double hi = *it;
+            const double lo = *(it - 1);
+            idx = (adc_max - lo <= hi - adc_max) ? size_t((it - 1) - adc.begin())
+                                                 : size_t(it - adc.begin());
+        }
+        return toa[idx];
+    }
+
+    // Otherwise, tight linear scan (no extra JSON lookups)
+    size_t best = 0;
+    double best_diff = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < n; ++i) {
+        double d = std::abs(adc[i] - adc_max);
+        if (d < best_diff) { best_diff = d; best = i; }
+    }
+    return toa[best];
+}
+
 class GlobalChannelPainter {
 public:
     GlobalChannelPainter(const std::string& mapping_file);

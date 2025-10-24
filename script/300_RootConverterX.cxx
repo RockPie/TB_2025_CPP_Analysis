@@ -20,6 +20,7 @@
 #include <TH2D.h>
 #include <TVectorD.h>
 #include <TLatex.h>
+#include <TParameter.h>
 
 #include "cxxopts.hpp"
 
@@ -146,13 +147,13 @@ bool parse_160byte_frame(std::vector<std::vector<uint32_t>>& _frame_words, std::
     }
 
     return true;
-
 }
 
+
+// * Process data lines between trigger lines *
+// * QA values:
+// * - _n_trigger_40line_error: number of samples not having 40 data lines between triggers
 void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, ULong64_t _recent_trig_line_timestamp, int _verbose=0) {
-    // if (true) {
-    //     spdlog::info("Trg {}: bx=0x{:03X}, ob=0x{:03X}", (int)_trg_index, _line.bx_cnt, _line.ob_cnt);
-    // }
     auto& trg_bx = _line.bx_cnt;
     auto& trg_ob = _line.ob_cnt;
     const int timestamp_diff_mg               = 41;
@@ -165,8 +166,6 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
     for (int i = 0; i < FPGA_CHANNEL_NUMBER; i++) {
         val0_array_min.push_back(1023);
     }
-
-    
 
     std::vector<std::vector<uint32_t>> frame_words(6);
 
@@ -190,10 +189,6 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
             auto& data_bx = data_line.bx_cnt;
             auto& data_ob = data_line.ob_cnt;
             uint64_t data_timestamp = (static_cast<uint64_t>(data_ob) * BX_PER_ORBIT) + data_bx;
-            // print the bx and ob in hex
-            // if (data_bx > 0xf00 || data_bx < 0x100) {
-            //    spdlog::info("  Data line: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, timestamp=0x{:08X}", (int)data_line.header_vldb_id, data_bx, data_ob, data_timestamp);
-            // }
             bool is_idle_line = false;
             if ((data_line.data_word0 == 0xACCCCCCC) || (data_line.data_word1 == 0xACCCCCCC) || (data_line.data_word2 == 0xACCCCCCC) || (data_line.data_word3 == 0xACCCCCCC)) {
                 if (skip_line_mask == false){
@@ -215,9 +210,6 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
             }
             
             if (looking_for_header) {
-                // check if the word start with 0x5 and ends with 0x5
-                // if ((data_line.data_word0 >> 28 == 0x5 && (data_line.data_word0 & 0xF) == 0x5) || (data_line.data_word1 >> 28 == 0x5 && (data_line.data_word1 & 0xF) == 0x5) || (data_line.data_word2 >> 28 == 0x5 && (data_line.data_word2 & 0xF) == 0x5) || (data_line.data_word3 >> 28 == 0x5 && (data_line.data_word3 & 0xF) == 0x5)) {
-                // check if the word start with 0xF and ends with 0x5 or 0x2
                 if (
                     (data_line.data_word0 >> 28 == 0xF && ((data_line.data_word0 & 0xF) == 0x5 || (data_line.data_word0 & 0xF) == 0x2)) || 
                     (data_line.data_word1 >> 28 == 0xF && ((data_line.data_word1 & 0xF) == 0x5 || (data_line.data_word1 & 0xF) == 0x2)) ||
@@ -251,11 +243,6 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                                              (int)data_line.header_vldb_id, data_bx, data_ob, data_line_index);
                             }
                             _n_trigger_header_ts_error++;
-                            // print the bx and ob in hex
-                            // if (true) {
-                            //     spdlog::info("  (b)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
-                            //                  (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
-                            // }
                             continue;   
                         } else {
                             machinegun_index = std::round(static_cast<double>(header_shift) / timestamp_diff_mg);
@@ -263,10 +250,6 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                             if (machinegun_index > max_machinegun_index) {
                                 max_machinegun_index = 16;
                             }
-                            // if (true) {
-                            //     spdlog::info("  (g)Data: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, header_shift={}",
-                            //                  (int)data_line.header_vldb_id, data_bx, data_ob, header_shift);
-                            // }
                             if (_verbose >= VERBOSE_LEVEL_INFO) {
                                 spdlog::info("    Info: header_shift={} corresponds to machinegun index {}",
                                              header_shift, machinegun_index);
@@ -323,7 +306,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                         auto last_data_shift = data_timestamp - current_lead_data_timestamp;
                         auto diff_sample = std::abs(static_cast<int>(last_data_shift) - timestamp_diff_sample);
                         // TODO: bypass the 40 check
-                        diff_sample = 0;
+                        // diff_sample = 0;
                         if (diff_sample > timestamp_diff_sample_tolerance) {
                             if (first_mg_flag){
                                 // if this is the first mg, do not count as error
@@ -467,27 +450,16 @@ int main(int argc, char** argv) {
     }
     TTree* output_tree = new TTree("data_tree", "Data tree");
     output_tree->SetDirectory(output_root);
-    auto *branch_fpga_id    = new UShort_t();   // 0 - 8
-    auto *branch_timestamp  = new ULong64_t();  // 64 bits
-    auto *branch_daqh_list  = new UInt_t[4];    // 32 bits
-    auto *branch_tc_list    = new Bool_t[FPGA_CHANNEL_NUMBER];
-    auto *branch_tp_list    = new Bool_t[FPGA_CHANNEL_NUMBER];
-    auto *branch_val0_list  = new UInt_t[FPGA_CHANNEL_NUMBER];
-    auto *branch_val1_list  = new UInt_t[FPGA_CHANNEL_NUMBER];
-    auto *branch_val2_list  = new UInt_t[FPGA_CHANNEL_NUMBER];
-    auto *branch_crc32_list = new UInt_t[4];
+    auto *branch_fpga_id        = new UShort_t();   // 0 - 8
+    auto *branch_timestamp      = new ULong64_t();  // 64 bits
+    auto *branch_daqh_list      = new UInt_t[4];    // 32 bits
+    auto *branch_tc_list        = new Bool_t[FPGA_CHANNEL_NUMBER];
+    auto *branch_tp_list        = new Bool_t[FPGA_CHANNEL_NUMBER];
+    auto *branch_val0_list      = new UInt_t[FPGA_CHANNEL_NUMBER];
+    auto *branch_val1_list      = new UInt_t[FPGA_CHANNEL_NUMBER];
+    auto *branch_val2_list      = new UInt_t[FPGA_CHANNEL_NUMBER];
+    auto *branch_crc32_list     = new UInt_t[4];
     auto *branch_last_heartbeat = new UInt_t();
-
-    // output_tree->Branch("fpga_id", branch_fpga_id, "fpga_id/s");
-    // output_tree->Branch("timestamp", branch_timestamp, "timestamp/l");
-    // output_tree->Branch("daqh_list", branch_daqh_list, "daqh_list[4]/i");
-    // output_tree->Branch("tc_list", branch_tc_list, ("tc_list[" + std::to_string(FPGA_CHANNEL_NUMBER) + "]/O").c_str());
-    // output_tree->Branch("tp_list", branch_tp_list, ("tp_list[" + std::to_string(FPGA_CHANNEL_NUMBER) + "]/O").c_str());
-    // output_tree->Branch("val0_list", branch_val0_list, ("val0_list[" + std::to_string(FPGA_CHANNEL_NUMBER) + "]/i").c_str());
-    // output_tree->Branch("val1_list", branch_val1_list, ("val1_list[" + std::to_string(FPGA_CHANNEL_NUMBER) + "]/i").c_str());
-    // output_tree->Branch("val2_list", branch_val2_list, ("val2_list[" + std::to_string(FPGA_CHANNEL_NUMBER) + "]/i").c_str());
-    // output_tree->Branch("crc32_list", branch_crc32_list, "crc32_list[4]/i");
-    // output_tree->Branch("last_heartbeat", branch_last_heartbeat, "last_heartbeat/i");
 
     output_tree->Branch("fpga_id",          branch_fpga_id,          "fpga_id/s");               // was /s
     output_tree->Branch("timestamp",        branch_timestamp,        "timestamp/l");             // was /l
@@ -522,6 +494,12 @@ int main(int argc, char** argv) {
     std::size_t n_data_lines       = 0;
     std::size_t n_trg_lines        = 0;
 
+    double n_data_lines_per_trigger_sum = 0.0;
+    std::vector<double> n_data_lines_per_trigger_vals;
+    std::vector<double> n_trigger_illegal_40_timestamps_vals;
+    std::vector<double> n_trigger_160byte_parse_failures_vals;
+    bool first_trigger_found = false;
+
     std::size_t n_trigger_processed = 0;
     std::size_t n_trigger_illegal_40_timestamps = 0;
     std::size_t n_trigger_160byte_parse_failures = 0;
@@ -533,8 +511,6 @@ int main(int argc, char** argv) {
     auto t_start = std::chrono::steady_clock::now();
 
     ULong64_t recent_trig_line_timestamp = 0;
-
-
 
     // std::vector<std::vector<uint32_t>> vldb_timestamps(n_vldb);
     std::vector<std::vector<bp::DataLine>> vldb_data_lines_buffer(n_vldb);
@@ -580,6 +556,7 @@ int main(int argc, char** argv) {
         [&](const bp::DataLine& line, std::span<const std::byte> raw){
             // (void)line; (void)raw;
             n_data_lines++;
+            n_data_lines_per_trigger_sum += 1.0;
             auto &orbit_id  = line.ob_cnt;
             auto &bc_id     = line.bx_cnt;
             auto &vldb_id   = line.header_vldb_id;
@@ -605,37 +582,32 @@ int main(int argc, char** argv) {
         [&](const bp::TrgLine& line, std::span<const std::byte> raw){
             (void)line; (void)raw;
             n_trg_lines++;
+            if (first_trigger_found){
+                n_trigger_processed++;
+                size_t trg_n_illegal_40_timestamps = 0;
+                size_t trg_n_160byte_parse_failures = 0;
+                trigger_data_processing(const_cast<bp::TrgLine&>(last_trg_line), vldb_data_lines_buffer, n_trg_lines, 
+                                        branch_fpga_id, branch_timestamp, branch_daqh_list, branch_tc_list, branch_tp_list,
+                                        branch_val0_list, branch_val1_list, branch_val2_list, branch_crc32_list, branch_last_heartbeat,
+                                        output_tree, trg_n_illegal_40_timestamps, trg_n_160byte_parse_failures, n_trigger_header_ts_errors, n_legal_samples, recent_trig_line_timestamp);
+                n_trigger_illegal_40_timestamps_vals.push_back(static_cast<double>(trg_n_illegal_40_timestamps));
+                n_trigger_illegal_40_timestamps += trg_n_illegal_40_timestamps;
+                n_trigger_160byte_parse_failures_vals.push_back(static_cast<double>(trg_n_160byte_parse_failures));
+                n_trigger_160byte_parse_failures += trg_n_160byte_parse_failures;
+            }
+            if (!first_trigger_found) {
+                first_trigger_found = true;
+                spdlog::info("First trigger found at orbit_id: {}, bc_id: {}", line.ob_cnt, line.bx_cnt);
+            } else{
+                n_data_lines_per_trigger_vals.push_back(n_data_lines_per_trigger_sum);
+                n_data_lines_per_trigger_sum = 0.0;
+            }
+           
             auto &orbit_id = line.ob_cnt;
             auto &bc_id    = line.bx_cnt;
             recent_trig_line_timestamp = (static_cast<uint64_t>(orbit_id) * BX_PER_ORBIT) + bc_id;
             
-            // auto &trg_bx_id = line.bx_cnt;
-            // auto &trg_orbit_id = line.ob_cnt;
-            // auto trg_unique_timestamp = (static_cast<uint64_t>(trg_orbit_id) << 12) | trg_bx_id;
-            
-            // for (size_t i = 0; i < vldb_timestamps.size(); i++) {
-            //     if (!vldb_timestamps[i].empty()) {
-            //         auto min_timestamp = *std::min_element(vldb_timestamps[i].begin(), vldb_timestamps[i].end());
-            //         auto adjusted_timestamp = vldb_timestamps[i].back() - min_timestamp;
-            //         spdlog::info("  VLDB {}: trg timestamp: {}, adjusted: {}", i, vldb_timestamps[i].back(), adjusted_timestamp);
-            //         vldb_timestamps[i].clear();
-            //     } else {
-            //         spdlog::info("  VLDB {}: no timestamps recorded", i);
-            //     }
-            // }
-
-            // process trigger data
-            if (n_trg_lines > 1){
-                n_trigger_processed++;
-                trigger_data_processing(const_cast<bp::TrgLine&>(last_trg_line), vldb_data_lines_buffer, n_trg_lines, 
-                                        branch_fpga_id, branch_timestamp, branch_daqh_list, branch_tc_list, branch_tp_list,
-                                        branch_val0_list, branch_val1_list, branch_val2_list, branch_crc32_list, branch_last_heartbeat,
-                                        output_tree, n_trigger_illegal_40_timestamps, n_trigger_160byte_parse_failures, n_trigger_header_ts_errors, n_legal_samples, recent_trig_line_timestamp);
-            }
             last_trg_line = line;
-
-            // spdlog::info("  trg bx_id: {}, orbit_id: {}, unique_timestamp: {}",
-            //              trg_bx_id, trg_orbit_id, trg_unique_timestamp);
         }
     );
 
@@ -707,6 +679,7 @@ int main(int argc, char** argv) {
     // x: channel 0-152
     // y: adc value 0-1024
     TCanvas* c_chn_map = new TCanvas("c_chn_map", "Channel Map", 1200, 2400);
+
     TH2D* adc_chn_map_0 = new TH2D("adc_chn_map", "ADC Channel Map;Channel;ADC Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
     TH2D* tot_chn_map_0 = new TH2D("tot_chn_map", "ToT Channel Map;Channel;ToT Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 4096);
     TH2D* toa_chn_map_0 = new TH2D("toa_chn_map", "ToA Channel Map;Channel;ToA Value", FPGA_CHANNEL_NUMBER, 0, FPGA_CHANNEL_NUMBER, chn_map_y_bin, 0, 1024);
@@ -813,11 +786,66 @@ int main(int argc, char** argv) {
     output_root->cd();
     c_chn_map->Write();
 
+    double n_data_lines_per_trigger_avg = 0.0;
+    double n_data_lines_per_trigger_err = 0.0;
+    if (!n_data_lines_per_trigger_vals.empty()) {
+        n_data_lines_per_trigger_avg = std::accumulate(n_data_lines_per_trigger_vals.begin(),
+                                                       n_data_lines_per_trigger_vals.end(), 0.0);
+    }
+    n_data_lines_per_trigger_avg /= static_cast<double>(n_data_lines_per_trigger_vals.size());
+    for (const auto& val : n_data_lines_per_trigger_vals) {
+        n_data_lines_per_trigger_err += (val - n_data_lines_per_trigger_avg) * (val - n_data_lines_per_trigger_avg);
+    }
+    n_data_lines_per_trigger_err = std::sqrt(n_data_lines_per_trigger_err / static_cast<double>(n_data_lines_per_trigger_vals.size()));
+    n_data_lines_per_trigger_err /= std::sqrt(static_cast<double>(n_data_lines_per_trigger_vals.size()));
+    TParameter<double>("Avg_Data_Lines_Per_Trigger", n_data_lines_per_trigger_avg).Write();
+    TParameter<double>("Err_Data_Lines_Per_Trigger", n_data_lines_per_trigger_err).Write();
+
+    double n_trigger_illegal_40_timestamps_avg = 0.0;
+    double n_trigger_illegal_40_timestamps_err = 0.0;
+    if (!n_trigger_illegal_40_timestamps_vals.empty()) {
+        n_trigger_illegal_40_timestamps_avg = std::accumulate(n_trigger_illegal_40_timestamps_vals.begin(),
+                                                              n_trigger_illegal_40_timestamps_vals.end(), 0.0);
+    }
+    n_trigger_illegal_40_timestamps_avg /= static_cast<double>(n_trigger_illegal_40_timestamps_vals.size());
+    for (const auto& val : n_trigger_illegal_40_timestamps_vals) {
+        n_trigger_illegal_40_timestamps_err += (val - n_trigger_illegal_40_timestamps_avg) * (val - n_trigger_illegal_40_timestamps_avg);
+    }
+    n_trigger_illegal_40_timestamps_err = std::sqrt(n_trigger_illegal_40_timestamps_err / static_cast<double>(n_trigger_illegal_40_timestamps_vals.size()));
+    n_trigger_illegal_40_timestamps_err /= std::sqrt(static_cast<double>(n_trigger_illegal_40_timestamps_vals.size()));
+    TParameter<double>("Avg_Trigger_Illegal_40_Timestamps", n_trigger_illegal_40_timestamps_avg).Write();
+    TParameter<double>("Err_Trigger_Illegal_40_Timestamps", n_trigger_illegal_40_timestamps_err).Write();
+
+    double n_trigger_160byte_parse_failures_avg = 0.0;
+    double n_trigger_160byte_parse_failures_err = 0.0;
+    if (!n_trigger_160byte_parse_failures_vals.empty()) {
+        n_trigger_160byte_parse_failures_avg = std::accumulate(n_trigger_160byte_parse_failures_vals.begin(),
+                                                               n_trigger_160byte_parse_failures_vals.end(), 0.0);
+    }
+    n_trigger_160byte_parse_failures_avg /= static_cast<double>(n_trigger_160byte_parse_failures_vals.size());
+    for (const auto& val : n_trigger_160byte_parse_failures_vals) {
+        n_trigger_160byte_parse_failures_err += (val - n_trigger_160byte_parse_failures_avg) * (val - n_trigger_160byte_parse_failures_avg);
+    }
+    n_trigger_160byte_parse_failures_err = std::sqrt(n_trigger_160byte_parse_failures_err / static_cast<double>(n_trigger_160byte_parse_failures_vals.size()));
+    n_trigger_160byte_parse_failures_err /= std::sqrt(static_cast<double>(n_trigger_160byte_parse_failures_vals.size()));
+    TParameter<double>("Avg_Trigger_160Byte_Parse_Failures", n_trigger_160byte_parse_failures_avg).Write();
+    TParameter<double>("Err_Trigger_160Byte_Parse_Failures", n_trigger_160byte_parse_failures_err).Write();
+
     std::string _legal_fpga_id_list_str = "";
     for (const auto& id : vldb_ids) {
         _legal_fpga_id_list_str += std::to_string(static_cast<int>(id)) + " ";
     }
     TNamed("Rootifier_legal_fpga_id_list", _legal_fpga_id_list_str.c_str()).Write();
+
+    // write the rhd line counts, data line counts, trg line counts
+    // TNamed("Total_RDH_L0", std::to_string(n_rdh_l0).c_str()).Write();
+    // TNamed("Total_RDH_L1", std::to_string(n_rdh_l1).c_str()).Write();
+    // TNamed("Total_Data_Lines", std::to_string(n_data_lines).c_str()).Write();
+    // TNamed("Total_Trg_Lines", std::to_string(n_trg_lines).c_str()).Write(); 
+    TParameter<double>("Total_RDH_L0", static_cast<double>(n_rdh_l0)).Write();
+    TParameter<double>("Total_RDH_L1", static_cast<double>(n_rdh_l1)).Write();
+    TParameter<double>("Total_Data_Lines", static_cast<double>(n_data_lines)).Write();
+    TParameter<double>("Total_Trg_Lines", static_cast<double>(n_trg_lines)).Write();
     output_root->Write();
     output_root->Close();
 

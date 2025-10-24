@@ -1,4 +1,7 @@
 #include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
 #include <TStyle.h>
 #include <TParameter.h>
 #include "H2GCROC_Common.hxx"
@@ -118,6 +121,16 @@ int main(int argc, char **argv) {
     const auto& board_rotation  = mapping_json.at("Board_Rotation");
     const auto& board_flip      = mapping_json.at("Board_Flip");
 
+    // load the example timewalk calibration file
+    std::string timewalk_json_file = "config/0416_example_adcmax_toa.json";
+    std::ifstream timewalk_json_ifs(timewalk_json_file);
+    if (!timewalk_json_ifs.is_open()) {
+        spdlog::error("Failed to open timewalk json file {}", timewalk_json_file);
+        return 1;
+    }
+    json timewalk_json;
+    timewalk_json_ifs >> timewalk_json;
+    
     // * --- Main code --------------------------------------------------------
     // * ----------------------------------------------------------------------
     const int machine_gun_samples = 16;
@@ -178,6 +191,9 @@ int main(int argc, char **argv) {
         last_heartbeat_pools[vldb_id].push_back(branch_last_heartbeat);
     }
 
+    const double toa_ns_min = -0.5 * (double(machine_gun_samples) * 25.0);
+    const double toa_ns_max = 0.5 * (double(machine_gun_samples) * 25.0);
+
     // create the 2D histograms for each SiPM channel
     std::vector<TH2D*> h2_waveforms;
     for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
@@ -234,15 +250,61 @@ int main(int argc, char **argv) {
                 Form("h2_adcmax_toa_correlation_vldb%d_channel%d", vldb_id, channel),
                 Form("ADC Max vs ToA (VLDB %d, Channel %d);ToA;ADC Max", vldb_id, channel),
                 hist_x_bins, 0, 1024,
-                hist_y_bins, 0, 25 * double(machine_gun_samples)
+                hist_y_bins, toa_ns_min, toa_ns_max
             );
             h2_adcmax_toa_correlation.push_back(h2_adcmax_toa);
+        }
+    }
+
+    // 1d toa value in ns distribution
+    std::vector<TH1D*> h1_toa_distributions;
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            int hist_bins = 100;
+            TH1D* h1_toa = new TH1D(
+                Form("h1_toa_distribution_vldb%d_channel%d", vldb_id, channel),
+                Form("ToA Distribution (VLDB %d, Channel %d);ToA (ns);Counts", vldb_id, channel),
+                hist_bins, toa_ns_min, toa_ns_max
+            );
+            h1_toa_distributions.push_back(h1_toa);
+        }
+    }
+
+    // toa code - toa ns correlation
+    std::vector<TH2D*> h2_toa_correlation;
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            int hist_x_bins = 256;
+            int hist_y_bins = 25 * machine_gun_samples;
+            TH2D* h2_toa_corr = new TH2D(
+                Form("h2_toa_code_ns_correlation_vldb%d_channel%d", vldb_id, channel),
+                Form("ToA Code vs ToA ns (VLDB %d, Channel %d);ToA Code;ToA (ns)", vldb_id, channel),
+                hist_x_bins, 0, 1024,
+                hist_y_bins, toa_ns_min, toa_ns_max
+            );
+            h2_toa_correlation.push_back(h2_toa_corr);
+        }
+    }
+
+    std::vector<TH2D*> h2_waveform_toa_offset;
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            int hist_x_bins = machine_gun_samples * 25; // 1 bin per ns
+            int hist_y_bins = 256;
+            TH2D* h2_waveform_toa = new TH2D(
+                Form("h2_waveform_toa_offset_vldb%d_channel%d", vldb_id, channel),
+                Form("Waveform ToA Offset (VLDB %d, Channel %d);Sample;ToA Offset (ns)", vldb_id, channel),
+                hist_x_bins, 0, 25.0 * machine_gun_samples,
+                hist_y_bins, 0, 1024
+            );
+            h2_waveform_toa_offset.push_back(h2_waveform_toa);
         }
     }
 
     // monitor hamming code errors
     size_t total_hamming_code_errors = 0;
     TH1I* h1_hamming_code_errors = new TH1I("h1_hamming_code_errors", "Hamming Code Errors per Event;Hamming Code Errors;Counts", 8, 0, 8);
+    size_t total_daqh_header_footer_errors = 0;
 
     size_t total_hamming_pass_events = 0;
     size_t total_non_zero_toa_counts = 0;
@@ -261,6 +323,11 @@ int main(int argc, char **argv) {
                         total_hamming_code_errors++;
                         hamming_code_errors_in_event++;
                     }
+                    auto daqh_header = (daqh_value & 0xF0000000) >> 28;
+                    auto daqh_footer = (daqh_value & 0x0000000F);
+                    if (daqh_header != 0xF || (daqh_footer != 0x5 && daqh_footer != 0x2)) {
+                        total_daqh_header_footer_errors++;
+                    }
                 } // half_id
             } // asic_id
         } // vldb_id
@@ -273,19 +340,23 @@ int main(int argc, char **argv) {
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
                 const int hist_index = vldb_id * FPGA_CHANNEL_NUMBER + channel;
                 std::vector<UInt_t> adc_pedestal_array;
+                std::vector<UInt_t> adc_samples;
                 UInt_t adc_max = 0;
                 UInt_t toa_max = 0;
                 int toa_max_index = -1;
                 int non_zero_toa_counts = 0;
+                int asic_id = channel / 76;
+                int half_id = (channel % 76) / 38;
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int hist_index = vldb_id * FPGA_CHANNEL_NUMBER + channel;
-                    auto adc_value = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
-                    auto toa_value = val2_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
+                    UInt_t adc_value = val0_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
+                    UInt_t toa_value = val2_list_pools[vldb_id][0][channel + sample * FPGA_CHANNEL_NUMBER];
                     h2_waveforms[hist_index]->Fill(sample, adc_value);
 
                     if (sample < 3) {
                         adc_pedestal_array.push_back(adc_value);
                     }
+                    adc_samples.push_back(adc_value);
 
                     if (adc_value > adc_max) {
                         adc_max = adc_value;
@@ -316,17 +387,86 @@ int main(int argc, char **argv) {
                     total_valid_toa_counts++;
                     auto toa_value_ns = decode_toa_value_ns(toa_max);
                     toa_value_ns += static_cast<double>(toa_max_index) * 25.0;  // add the sample offset
+                    toa_manual_correction(vldb_id, asic_id, half_id, toa_max, toa_value_ns);
+                    auto timewalk_correction = find_closest_toa(timewalk_json, adc_max_minus_pedestal);
+                    // spdlog::info("Event {}: VLDB {} Channel {}: ToA (corrected) = {}", entry, vldb_id, channel, toa_value_ns);
                     // debug: check the toa value
                     // spdlog::info("Event {}: VLDB {} Channel {}: ToA = {} (raw: {})", entry, vldb_id, channel, toa_value_ns, toa_max);
+                    toa_value_ns -= timewalk_correction;
                     h2_adcmax_toa_correlation[hist_index]->Fill(adc_max_minus_pedestal, toa_value_ns);
+                    h1_toa_distributions[hist_index]->Fill(toa_value_ns);
+                    h2_toa_correlation[hist_index]->Fill(toa_max, toa_value_ns);
+
+                    // fill waveform toa offset histogram
+                    for (int sample = 0; sample < machine_gun_samples; sample++) {
+                        double sample_time_ns = static_cast<double>(sample) * 25.0 - toa_value_ns;
+                        double sample_amplitude = static_cast<double>(adc_samples[sample]) - static_cast<double>(pedestal_median) + 50.0;
+                        h2_waveform_toa_offset[hist_index]->Fill(sample_time_ns, sample_amplitude);
+                    }
                 }
             }
         }
     }
     input_root->Close();
 
+    // // parameterize the curve of vldb1, channel 106
+    // auto h2_example = h2_adcmax_toa_correlation[1 * FPGA_CHANNEL_NUMBER + 106];
+    // // create TGraph from TH2D
+    // std::vector<double> x_vals;
+    // std::vector<double> y_vals;
+    // std::vector<double> y_errs;
+    // for (int x_bin = 1; x_bin <= h2_example->GetNbinsX(); x_bin++) {
+    //     double x_center = h2_example->GetXaxis()->GetBinCenter(x_bin);
+    //     double y_sum = 0;
+    //     double y_count = 0;
+    //     for (int y_bin = 1; y_bin <= h2_example->GetNbinsY(); y_bin++) {
+    //         double bin_content = h2_example->GetBinContent(x_bin, y_bin);
+    //         if (bin_content > 0) {
+    //             double y_center = h2_example->GetYaxis()->GetBinCenter(y_bin);
+    //             y_sum += y_center * bin_content;
+    //             y_count += bin_content;
+    //         }
+    //     }
+    //     if (y_count > 0) {
+    //         double y_mean = y_sum / y_count;
+    //         x_vals.push_back(x_center);
+    //         y_vals.push_back(y_mean);
+    //         // estimate error as standard deviation
+    //         double y_var_sum = 0;
+    //         for (int y_bin = 1; y_bin <= h2_example->GetNbinsY(); y_bin++) {
+    //             double bin_content = h2_example->GetBinContent(x_bin, y_bin);
+    //             if (bin_content > 0) {
+    //                 double y_center = h2_example->GetYaxis()->GetBinCenter(y_bin);
+    //                 y_var_sum += bin_content * (y_center - y_mean) * (y_center - y_mean);
+    //             }
+    //         }
+    //         double y_stddev = std::sqrt(y_var_sum / y_count);
+    //         y_errs.push_back(y_stddev/std::sqrt(y_count));
+    //     }
+    // }
+    // TGraphErrors* graph_example = new TGraphErrors(x_vals.size(), x_vals.data(), y_vals.data(), nullptr, y_errs.data());
+    // graph_example->SetName("graph_example_vldb1_channel106");
+    // graph_example->SetTitle("Example ADC Max vs ToA (VLDB 1, Channel 106);ADC Max - Pedestal;ToA (ns)");
+
+    // // save the data as json file
+    // std::string example_json_file = script_output_folder + "/" + script_input_run_number + "_example_adcmax_toa.json";
+    // std::ofstream example_json_ofs(example_json_file);
+    // if (!example_json_ofs.is_open()) {
+    //     spdlog::error("Failed to open example json file {}", example_json_file);
+    //     return 1;
+    // }
+    // json example_json;
+    // example_json["adc_max_minus_pedestal"] = x_vals;
+    // example_json["toa_ns"] = y_vals;
+    // example_json_ofs << example_json.dump(4);
+    // example_json_ofs.close();
+
+    // output_root->cd();
+    // graph_example->Write();
+
     // calculate QA values
     double hamming_code_error_rate = static_cast<double>(total_hamming_code_errors) / static_cast<double>(entry_max) / 4.0;
+    double daqh_header_footer_error_rate = static_cast<double>(total_daqh_header_footer_errors) / static_cast<double>(entry_max) / 4.0;
     double toa_valid_fraction = static_cast<double>(total_valid_toa_counts) / static_cast<double>(vldb_number * FPGA_CHANNEL_NUMBER * total_hamming_pass_events);
 
     // print out total non-zero ToA counts and valid ToA counts
@@ -403,9 +543,32 @@ int main(int argc, char **argv) {
     canvas_hamming_code_errors.Update();
     canvas_hamming_code_errors.Write();
 
+    TCanvas canvas_toa_distributions("canvas_toa_distributions", "ToA Distributions", 1200, 800);
+    draw_mosaic_fixed(canvas_toa_distributions, h1_toa_distributions, topo_ped_median);
+    output_root->cd();
+    canvas_toa_distributions.Modified();
+    canvas_toa_distributions.Update();
+    canvas_toa_distributions.Write();
+
+    TCanvas canvas_toa_correlation("canvas_toa_correlation", "ToA Code vs ToA ns Correlation", 1200, 800);
+    draw_mosaic_fixed(canvas_toa_correlation, h2_toa_correlation, topo_ped_median);
+    output_root->cd();
+    canvas_toa_correlation.Modified();
+    canvas_toa_correlation.Update();
+    canvas_toa_correlation.Write();
+
+    TCanvas canvas_waveform_toa_offset("canvas_waveform_toa_offset", "Waveform ToA Offset", 1200, 800);
+    draw_mosaic_fixed(canvas_waveform_toa_offset, h2_waveform_toa_offset, topo_ped_median);
+    output_root->cd();
+    canvas_waveform_toa_offset.Modified();
+    canvas_waveform_toa_offset.Update();
+    canvas_waveform_toa_offset.Write();
+
     // write QA values to the root file as a TParameter
     TParameter<double> param_hamming_code_error_rate("hamming_code_error_rate", hamming_code_error_rate);
     param_hamming_code_error_rate.Write();
+    TParameter<double> param_daqh_header_footer_error_rate("daqh_header_footer_error_rate", daqh_header_footer_error_rate);
+    param_daqh_header_footer_error_rate.Write();
     TParameter<double> param_toa_valid_fraction("toa_valid_fraction", toa_valid_fraction);
     param_toa_valid_fraction.Write();
 

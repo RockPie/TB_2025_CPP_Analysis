@@ -3,6 +3,7 @@ import ROOT, os, json, time, math
 def draw_run_categorical_bands_scatter(
     runs,                    # list[int]            —— 原始 run 列表（可重复）
     y_values,                # list[float]          —— 与 runs 等长
+    y_errors,          # list[float] or None  —— 与 runs 等长，若提供则画误差棒
     run_to_color,            # dict[int]->int       —— run号 -> ROOT 颜色索引
     output_pdf,              # str                  —— 输出 PDF 路径
     y_min=1e-6,              # float                —— y 轴最小值（logY 必须 > 0）
@@ -17,14 +18,26 @@ def draw_run_categorical_bands_scatter(
     root_also=None,          # Optional[str]        —— 若提供则把 canvas 写入 ROOT 文件
     rotate_x_labels=True,    # bool                 —— x 轴标签竖排
     marker_style=20,         # int
-    marker_size=1.2,         # float
+    marker_size=0.6,         # float
     marker_color=ROOT.kBlack # int
 ):
     assert len(runs) == len(y_values), "runs 与 y_values 长度不一致"
+    if y_errors is not None:
+        assert len(runs) == len(y_errors), "runs 与 y_errors 长度不一致"
 
     # 过滤/夹值（logY 不允许 0 或负数）
     vals = [y_min if (v is None or (isinstance(v, float) and math.isnan(v)) or v <= 0) else float(v)
             for v in y_values]
+    if y_errors is not None:
+        for i in range(len(vals)):
+            err = y_errors[i]
+            if err < 0:
+                err = abs(err)
+            y_lo = vals[i] - err
+            if logy and y_lo <= 0:
+                err = vals[i] - y_min
+            vals[i] = vals[i]
+            y_errors[i] = err
     runs = list(map(int, runs))
 
     # 分类轴顺序：按出现顺序去重
@@ -98,10 +111,17 @@ def draw_run_categorical_bands_scatter(
 
     # 散点（画在 bin 中心）
     pos_map = {r: i for i, r in enumerate(runs_seen)}
-    g = ROOT.TGraph(len(runs))
-    for i, (r, y) in enumerate(zip(runs, vals)):
-        x = pos_map[r] + 0.5
-        g.SetPoint(i, float(x), float(y))
+    g = ROOT.TGraphErrors(len(runs)) if y_errors is not None else ROOT.TGraph(len(runs))
+    if y_errors is not None:
+        for i, err in enumerate(y_errors):
+            r, y = runs[i], vals[i]
+            x = pos_map[r] + 0.5
+            g.SetPoint(i, float(x), float(y))
+            g.SetPointError(i, 0.0, float(err))
+    else:
+        for i, (r, y) in enumerate(zip(runs, vals)):
+            x = pos_map[r] + 0.5
+            g.SetPoint(i, float(x), float(y))
     g.SetMarkerStyle(marker_style)
     g.SetMarkerSize(marker_size)
     g.SetMarkerColor(marker_color)
@@ -143,10 +163,10 @@ def draw_run_categorical_bands_scatter(
         "runs_seen": runs_seen
     }
 
-folder_201_waveform = "dump/201_Waveform/beamtests"
-list_201_waveform_root_files = [f for f in os.listdir(folder_201_waveform) if f.endswith(".root") and not f.startswith("._")]
+folder_301_waveform = "dump/300_RootConverterX/beamtests"
+list_301_waveform_root_files = [f for f in os.listdir(folder_301_waveform) if f.endswith(".root") and not f.startswith("._")]
 output_folder = "dump/QA_Results"
-output_file_path = os.path.join(output_folder, "QA_201_Waveform_Results.root")
+output_file_path = os.path.join(output_folder, "QA_301_Waveform_Results.root")
 
 color_json_file = "config/run_color_collection.json"
 color_json = json.load(open(color_json_file, "r"))
@@ -164,62 +184,82 @@ for color_hex, run_info in color_json.items():
     # add description printout
     description = run_info.get("description", "")
     channel_color_map[run_number]["description"] = description
-# file name: dump/201_Waveform/beamtests/Run0179.root
-list_201_waveform_run_numbers = []
-for filename in list_201_waveform_root_files:
+# file name: dump/301_Waveform/beamtests/Run0179.root
+list_301_waveform_run_numbers = []
+for filename in list_301_waveform_root_files:
     run_number_str = filename.replace("Run", "").replace(".root", "")
     try:
         run_number = int(run_number_str)
-        list_201_waveform_run_numbers.append(run_number)
+        list_301_waveform_run_numbers.append(run_number)
     except ValueError:
         continue
-print("Found 201_Waveform root files for run numbers:", list_201_waveform_run_numbers)
+print("Found 301_Waveform root files for run numbers:", list_301_waveform_run_numbers)
 
-list_201_waveform_hamming_code_error_rates = []
-list_201_waveform_daqh_header_footer_error_rates = []
-list_201_waveform_toa_valid_fractions = []
-list_201_waveform_kColors = []
+# list_301_waveform_hamming_code_error_rates = []
+# list_301_waveform_daqh_header_footer_error_rates = []
+# list_301_waveform_toa_valid_fractions = []
+list_301_waveform_kColors = []
+list_301_data_lines_per_trigger_averages    = []
+list_301_data_lines_per_trigger_errors      = []
+list_301_illegal_40_timestamp_averages      = []
+list_301_illegal_40_timestamp_errors        = []
+list_301_trigger_160byte_parse_failures     = []
+list_301_trigger_160byte_parse_failures_err = []
 
 # go through each run number and extract QA values
-for run_index in range(len(list_201_waveform_run_numbers)):
-    run_number = list_201_waveform_run_numbers[run_index]
-    root_file_path = os.path.join(folder_201_waveform, f"Run{run_number:04d}.root")
+for run_index in range(len(list_301_waveform_run_numbers)):
+    run_number = list_301_waveform_run_numbers[run_index]
+    root_file_path = os.path.join(folder_301_waveform, f"Run{run_number:04d}.root")
     input_root = ROOT.TFile.Open(root_file_path, "READ")
     if not input_root or input_root.IsZombie():
         print(f"Failed to open root file: {root_file_path}")
         continue
 
-    hamming_code_error_rate = None
-    toa_valid_fraction = None
-    daqh_header_footer_error_rate = None
+    Avg_Data_Lines_Per_Trigger = None
+    Err_Data_Lines_Per_Trigger = None
+    Avg_Trigger_Illegal_40_Timestamps = None
+    Err_Trigger_Illegal_40_Timestamps = None
+    Avg_Trigger_160Byte_Parse_Failures = None
+    Err_Trigger_160Byte_Parse_Failures = None
 
-    param_daqh = input_root.Get("daqh_header_footer_error_rate")
-    if param_daqh:
-        daqh_header_footer_error_rate = param_daqh.GetVal()
+    param_avg_data_lines = input_root.Get("Avg_Data_Lines_Per_Trigger")
+    if param_avg_data_lines:
+        Avg_Data_Lines_Per_Trigger = param_avg_data_lines.GetVal()
+    param_err_data_lines = input_root.Get("Err_Data_Lines_Per_Trigger")
+    if param_err_data_lines:
+        Err_Data_Lines_Per_Trigger = param_err_data_lines.GetVal()
+    param_avg_illegal_40 = input_root.Get("Avg_Trigger_Illegal_40_Timestamps")
+    if param_avg_illegal_40:
+        Avg_Trigger_Illegal_40_Timestamps = param_avg_illegal_40.GetVal()
+    param_err_illegal_40 = input_root.Get("Err_Trigger_Illegal_40_Timestamps")
+    if param_err_illegal_40:
+        Err_Trigger_Illegal_40_Timestamps = param_err_illegal_40.GetVal()
+    param_avg_160byte = input_root.Get("Avg_Trigger_160Byte_Parse_Failures")
+    if param_avg_160byte:
+        Avg_Trigger_160Byte_Parse_Failures = param_avg_160byte.GetVal()
+    param_err_160byte = input_root.Get("Err_Trigger_160Byte_Parse_Failures")
+    if param_err_160byte:
+        Err_Trigger_160Byte_Parse_Failures = param_err_160byte.GetVal()
 
-    param_hamming = input_root.Get("hamming_code_error_rate")
-    if param_hamming:
-        hamming_code_error_rate = param_hamming.GetVal()
-    
-    param_toa = input_root.Get("toa_valid_fraction")
-    if param_toa:
-        toa_valid_fraction = param_toa.GetVal()
+    list_301_data_lines_per_trigger_averages.append(Avg_Data_Lines_Per_Trigger)
+    list_301_data_lines_per_trigger_errors.append(Err_Data_Lines_Per_Trigger)
+    list_301_illegal_40_timestamp_averages.append(Avg_Trigger_Illegal_40_Timestamps)
+    list_301_illegal_40_timestamp_errors.append(Err_Trigger_Illegal_40_Timestamps)
+    list_301_trigger_160byte_parse_failures.append(Avg_Trigger_160Byte_Parse_Failures)
+    list_301_trigger_160byte_parse_failures_err.append(Err_Trigger_160Byte_Parse_Failures)
 
-    list_201_waveform_hamming_code_error_rates.append(hamming_code_error_rate)
-    list_201_waveform_toa_valid_fractions.append(toa_valid_fraction)
-    list_201_waveform_daqh_header_footer_error_rates.append(daqh_header_footer_error_rate)
-    list_201_waveform_kColors.append(channel_color_map.get(run_number, {}).get("color", ROOT.kGray+1))
+    list_301_waveform_kColors.append(channel_color_map.get(run_number, {}).get("color", ROOT.kGray+1))
     input_root.Close()
 
-    print(f"Run {run_number}: Hamming Code Error Rate = {hamming_code_error_rate}, ToA Valid Fraction = {toa_valid_fraction}, DAQH Header/Footer Error Rate = {daqh_header_footer_error_rate}")
-
-# sort the lists by run number
-sorted_indices = sorted(range(len(list_201_waveform_run_numbers)), key=lambda i: list_201_waveform_run_numbers[i])
-list_201_waveform_run_numbers = [list_201_waveform_run_numbers[i] for i in sorted_indices]
-list_201_waveform_hamming_code_error_rates = [list_201_waveform_hamming_code_error_rates[i] for i in sorted_indices]
-list_201_waveform_toa_valid_fractions = [list_201_waveform_toa_valid_fractions[i] for i in sorted_indices]
-list_201_waveform_daqh_header_footer_error_rates = [list_201_waveform_daqh_header_footer_error_rates[i] for i in sorted_indices]
-list_201_waveform_kColors = [list_201_waveform_kColors[i] for i in sorted_indices]
+sorted_indices = sorted(range(len(list_301_waveform_run_numbers)), key=lambda i: list_301_waveform_run_numbers[i])
+list_301_waveform_run_numbers = [list_301_waveform_run_numbers[i] for i in sorted_indices]
+list_301_data_lines_per_trigger_averages    = [list_301_data_lines_per_trigger_averages[i] for i in sorted_indices]
+list_301_data_lines_per_trigger_errors      = [list_301_data_lines_per_trigger_errors[i] for i in sorted_indices]
+list_301_illegal_40_timestamp_averages      = [list_301_illegal_40_timestamp_averages[i] for i in sorted_indices]
+list_301_illegal_40_timestamp_errors        = [list_301_illegal_40_timestamp_errors[i] for i in sorted_indices]
+list_301_trigger_160byte_parse_failures     = [list_301_trigger_160byte_parse_failures[i] for i in sorted_indices]
+list_301_trigger_160byte_parse_failures_err = [list_301_trigger_160byte_parse_failures_err[i] for i in sorted_indices]
+list_301_waveform_kColors = [list_301_waveform_kColors[i] for i in sorted_indices]
 
 channel_color_map = {}
 for color_hex, run_info in color_json.items():
@@ -237,76 +277,79 @@ for color_hex, run_info in color_json.items():
 
 # 生成 run->color / run->text 两个 dict
 run_to_color = {r: info["color"] for r, info in channel_color_map.items()}
-run_to_text  = {r: info.get("description","") for r, info in channel_color_map.items()}
+run_to_text  = {r: info.get("description", "") for r, info in channel_color_map.items()}
 
-# ========= 2) 画第一张：Hamming Code Error Rate =========
+# ========= 2) Draw the Data Lines per Trigger plot =========
 title_lines = [
     "FoCal-H Prototype 3",
     "Beam Test 2025 Oct",
-    "Hamming Code Error Rate",
+    "Data Lines per Trigger",
     time.strftime("Date: %Y-%m-%d")
 ]
-out_pdf1 = os.path.join(output_folder, "QA_201_hamming_error_rate.pdf")
+out_pdf1 = os.path.join(output_folder, "QA_301_data_lines_per_trigger.pdf")
 
 draw_run_categorical_bands_scatter(
-    runs=list_201_waveform_run_numbers,
-    y_values=list_201_waveform_hamming_code_error_rates,
+    runs=list_301_waveform_run_numbers,
+    y_values=list_301_data_lines_per_trigger_averages,
+    y_errors=list_301_data_lines_per_trigger_errors,
     run_to_color=run_to_color,
     output_pdf=out_pdf1,
-    y_min=1e-7, y_max=1.0, logy=True,
+    y_min=0, y_max=max(list_301_data_lines_per_trigger_averages)*2.0, logy=False,
     band_shrink=0.00,
-    y_label="Hamming Code Error Rate",
+    y_label="Data Lines per Trigger",
     x_label="Run Number",
     title_lines=title_lines,
     run_to_text=run_to_text,
     png_also=True,
-    root_also=os.path.join(output_folder, "QA_201_hamming_error_rate.root")
+    root_also=os.path.join(output_folder, "QA_301_data_lines_per_trigger.root")
 )
 
-# ========= 3) 画第二张：ToA Valid Fraction（示例）=========
-title_lines2 = [
+# ========= 3) Draw the Illegal 40 Timestamp per Trigger plot =========
+title_lines = [
     "FoCal-H Prototype 3",
     "Beam Test 2025 Oct",
-    "ToA Valid Fraction",
+    "Illegal 40-byte Timestamp per Trigger",
     time.strftime("Date: %Y-%m-%d")
 ]
-out_pdf2 = os.path.join(output_folder, "QA_201_toa_valid_fraction.pdf")
+out_pdf2 = os.path.join(output_folder, "QA_301_illegal_40_timestamp_per_trigger.pdf")
 
 draw_run_categorical_bands_scatter(
-    runs=list_201_waveform_run_numbers,
-    y_values=list_201_waveform_toa_valid_fractions,
+    runs=list_301_waveform_run_numbers,
+    y_values=list_301_illegal_40_timestamp_averages,
+    y_errors=list_301_illegal_40_timestamp_errors,
     run_to_color=run_to_color,
     output_pdf=out_pdf2,
-    y_min=0, y_max=1.0, logy=False,
+    y_min=0, y_max=max(list_301_illegal_40_timestamp_averages)*2.0, logy=False,
     band_shrink=0.00,
-    y_label="ToA Valid Fraction",
+    y_label="Illegal 40-byte Timestamp per Trigger",
     x_label="Run Number",
-    title_lines=title_lines2,
+    title_lines=title_lines,
     run_to_text=run_to_text,
     png_also=True,
-    root_also=os.path.join(output_folder, "QA_201_toa_valid_fraction.root")
+    root_also=os.path.join(output_folder, "QA_301_illegal_40_timestamp_per_trigger.root")
 )
 
-# ========= 4) 画第三张：DAQH Header/Footer Error Rate =========
-title_lines3 = [
+# ========= 4) Draw the 160-Byte Parse Failures per Trigger plot =========
+title_lines = [
     "FoCal-H Prototype 3",
     "Beam Test 2025 Oct",
-    "DAQH Header/Footer Error Rate",
+    "160-Byte Parse Failures per Trigger",
     time.strftime("Date: %Y-%m-%d")
 ]
-out_pdf3 = os.path.join(output_folder, "QA_201_daqh_header_footer_error_rate.pdf")
+out_pdf3 = os.path.join(output_folder, "QA_301_160byte_parse_failures_per_trigger.pdf")
 
 draw_run_categorical_bands_scatter(
-    runs=list_201_waveform_run_numbers,
-    y_values=list_201_waveform_daqh_header_footer_error_rates,
+    runs=list_301_waveform_run_numbers,
+    y_values=list_301_trigger_160byte_parse_failures,
+    y_errors=list_301_trigger_160byte_parse_failures_err,
     run_to_color=run_to_color,
     output_pdf=out_pdf3,
-    y_min=1e-7, y_max=1.0, logy=True,
+    y_min=0, y_max=max(list_301_trigger_160byte_parse_failures)*2.0, logy=False,
     band_shrink=0.00,
-    y_label="DAQH Header/Footer Error Rate",
+    y_label="160-Byte Parse Failures per Trigger",
     x_label="Run Number",
-    title_lines=title_lines3,
+    title_lines=title_lines,
     run_to_text=run_to_text,
     png_also=True,
-    root_also=os.path.join(output_folder, "QA_201_daqh_header_footer_error_rate.root")
-)
+    root_also=os.path.join(output_folder, "QA_301_160byte_parse_failures_per_trigger.root")
+)   

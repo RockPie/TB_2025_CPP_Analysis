@@ -1,0 +1,26 @@
+{
+    "scan_id": 16,
+    "description": "Energy scan with 0.2 CC Gain, 53 V bias",
+    "output_file_name": "scan_16_analysis.root",
+    "n_events": -1,
+    "beam_type": "Hadron",
+    "run_numbers": [
+        414,
+        415,
+        416,
+        417,
+        420,
+        426,
+        427
+    ],
+    "run_energies": [
+        300,
+        200,
+        100,
+        60,
+        350,
+        150,
+        250
+    ],
+    "enable_gaussian_fit": true
+}
