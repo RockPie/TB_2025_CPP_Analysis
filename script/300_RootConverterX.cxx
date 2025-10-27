@@ -11,6 +11,9 @@
 #include <string>
 #include <array>
 #include <unordered_set>
+#include <span>
+#include <numeric>
+#include <cmath>
 
 #include <TFile.h>
 #include <TTree.h>
@@ -26,7 +29,6 @@
 
 #define FPGA_CHANNEL_NUMBER 152
 #define BX_PER_ORBIT 3564
-#define FPGA_NUMBER 2
 
 #define VERBOSE_LEVEL_SILENT    0
 #define VERBOSE_LEVEL_ERROR     1
@@ -153,7 +155,10 @@ bool parse_160byte_frame(std::vector<std::vector<uint32_t>>& _frame_words, std::
 // * Process data lines between trigger lines *
 // * QA values:
 // * - _n_trigger_40line_error: number of samples not having 40 data lines between triggers
-void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, ULong64_t _recent_trig_line_timestamp, int _verbose=0) {
+// * - _n_trigger_160byte_error: number of samples failing 160-byte frame parsing
+// * - _n_trigger_header_ts_error: each sample's first data line timestamp is not increasing by 41
+// * - idle_data_lines: number of idle data lines detected (~ 1000)
+void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::DataLine>>& _vldb_data_lines, std::size_t _trg_index, UShort_t* _branch_fpga_id, ULong64_t* _branch_timestamp, UInt_t* _branch_daqh_list, Bool_t* _branch_tc_list, Bool_t* _branch_tp_list, UInt_t* _branch_val0_list, UInt_t* _branch_val1_list, UInt_t* _branch_val2_list, UInt_t* _branch_crc32_list, UInt_t* _branch_last_heartbeat, TTree* _output_tree, std::size_t &_n_trigger_40line_error, std::size_t &_n_trigger_160byte_error, std::size_t &_n_trigger_header_ts_error, std::size_t &_n_legal_samples, ULong64_t _recent_trig_line_timestamp, uint64_t& idle_data_lines, uint64_t& skipped_data_lines, uint64_t& total_samples, double& valid_samples, int _verbose=0) {
     auto& trg_bx = _line.bx_cnt;
     auto& trg_ob = _line.ob_cnt;
     const int timestamp_diff_mg               = 41;
@@ -171,19 +176,18 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
 
     
     for (auto &_data_lines : _vldb_data_lines) {
-        uint64_t idle_line_cnt = 0;
-        uint64_t line_skipped_cnt = 0;
         uint64_t first_valid_data_timestamp = 0;
         uint64_t current_lead_data_timestamp = 0;
-        int max_machinegun_index = 0;
-        int L1A_cmd_counter = 0;
-        bool first_data_found   = false;
-        bool first_mg_flag       = false;
-        bool looking_for_header = true;
-        bool skip_line_mask = false;
-        int line_candidate_counter = 0;
-        int machinegun_index = -1;
+        int max_machinegun_index    = 0;
+        int L1A_cmd_counter         = 0;
+        bool first_data_found       = false;
+        bool first_mg_flag          = false;
+        bool looking_for_header     = true;
+        bool skip_line_mask         = false;
+        int line_candidate_counter  = 0;
+        int machinegun_index        = -1;
         int candidate_header_line_index = -1;
+        int line_accepted_counter  = 0;
         for (auto data_line_index = 0; data_line_index < _data_lines.size(); data_line_index++) {
             auto& data_line = _data_lines[data_line_index];
             auto& data_bx = data_line.bx_cnt;
@@ -192,13 +196,24 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
             bool is_idle_line = false;
             if ((data_line.data_word0 == 0xACCCCCCC) || (data_line.data_word1 == 0xACCCCCCC) || (data_line.data_word2 == 0xACCCCCCC) || (data_line.data_word3 == 0xACCCCCCC)) {
                 if (skip_line_mask == false){
-                    idle_line_cnt++;
+                    idle_data_lines++;
+                    // print line info
+                    if (_verbose >= VERBOSE_LEVEL_INFO) {
+                        spdlog::info("  Idle line: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, line_index={}",
+                                     (int)data_line.header_vldb_id, data_bx, data_ob, data_line_index);
+                    }
                 }
                 is_idle_line = true;
+            } else {
+                // spdlog::info("  Non-idle line: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, line_index={}",
+                //              (int)data_line.header_vldb_id, data_bx, data_ob, data_line_index);
+                // spdlog::info("    data_word0=0x{:08X}, data_word1=0x{:08X}, data_word2=0x{:08X}, data_word3=0x{:08X}, data_word4=0x{:08X}, data_word5=0x{:08X}",
+                //              data_line.data_word0, data_line.data_word1, data_line.data_word2, data_line.data_word3, data_line.data_word4, data_line.data_word5);
             }
             if (data_line.data_word4 == 0x4B00004B){
+                L1A_cmd_counter++;
                 if (skip_line_mask == false){
-                    L1A_cmd_counter++;
+                    
                     // print line info and data
                     if (_verbose >= VERBOSE_LEVEL_INFO) {
                         spdlog::info("  L1A cmd: vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, line_index={}",
@@ -216,6 +231,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                     (data_line.data_word2 >> 28 == 0xF && ((data_line.data_word2 & 0xF) == 0x5 || (data_line.data_word2 & 0xF) == 0x2)) ||
                     (data_line.data_word3 >> 28 == 0xF && ((data_line.data_word3 & 0xF) == 0x5 || (data_line.data_word3 & 0xF) == 0x2))
                 ) {
+                    line_accepted_counter++;
                     if (!first_data_found) {    // if this is the first data frame for the trigger, assume it is mg index 0
                         first_data_found = true;
                         first_valid_data_timestamp = data_timestamp;
@@ -278,7 +294,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                     frame_words[5].push_back(data_line.data_word5);
                 }
                 else {
-                    line_skipped_cnt++;
+                    skipped_data_lines++;
                     if (is_idle_line==false && skip_line_mask==false) {
                         // if ((int)data_line.header_vldb_id == 1) {
                         //     spdlog::info("    Debug: skipping line without header, vldb_id={}, bx=0x{:03X}, ob=0x{:03X}, line_index={}",
@@ -291,6 +307,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
             } // end of looking for header
             else {
                 line_candidate_counter++;
+                line_accepted_counter++;
                 frame_words[0].push_back(data_line.data_word0);
                 frame_words[1].push_back(data_line.data_word1);
                 frame_words[2].push_back(data_line.data_word2);
@@ -306,7 +323,7 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
                         auto last_data_shift = data_timestamp - current_lead_data_timestamp;
                         auto diff_sample = std::abs(static_cast<int>(last_data_shift) - timestamp_diff_sample);
                         // TODO: bypass the 40 check
-                        // diff_sample = 0;
+                        diff_sample = 0;
                         if (diff_sample > timestamp_diff_sample_tolerance) {
                             if (first_mg_flag){
                                 // if this is the first mg, do not count as error
@@ -392,7 +409,10 @@ void trigger_data_processing(bp::TrgLine& _line, std::vector<std::vector<bp::Dat
         // spdlog::info("  Finished processing trigger, total data lines: {}, legal samples: {}, 40-line errors: {}, 160-byte errors: {}, header timestamp errors: {}, max mg index: {}, idle lines: {}, skipped lines: {}, L1A sent: {}",
         //              _data_lines.size(), _n_legal_samples, _n_trigger_40line_error, _n_trigger_160byte_error, _n_trigger_header_ts_error, max_machinegun_index, idle_line_cnt, line_skipped_cnt, L1A_cmd_counter);
         _data_lines.clear();
+        total_samples += static_cast<uint64_t>(L1A_cmd_counter); // this is how many samples were expected
+        valid_samples += static_cast<double>(line_accepted_counter) / 40.0; // each sample has 40 data lines
     } // for each vldb+
+
 }
 
 int main(int argc, char** argv) {
@@ -498,6 +518,9 @@ int main(int argc, char** argv) {
     std::vector<double> n_data_lines_per_trigger_vals;
     std::vector<double> n_trigger_illegal_40_timestamps_vals;
     std::vector<double> n_trigger_160byte_parse_failures_vals;
+    std::vector<double> n_trigger_header_ts_errors_vals;
+    std::vector<double> n_trigger_idle_lines_vals;
+    std::vector<double> n_trigger_skipped_lines_vals;
     bool first_trigger_found = false;
 
     std::size_t n_trigger_processed = 0;
@@ -505,6 +528,9 @@ int main(int argc, char** argv) {
     std::size_t n_trigger_160byte_parse_failures = 0;
     std::size_t n_trigger_header_ts_errors = 0;
     std::size_t n_legal_samples = 0;
+
+    double n_samples_valid = 0.0;
+    uint64_t n_samples_in_total = 0;
 
     const uint32_t idle_pattern = 0xACCCCCCC;
     const uint32_t L1A_pattern  = 0x4B00004B;
@@ -586,14 +612,21 @@ int main(int argc, char** argv) {
                 n_trigger_processed++;
                 size_t trg_n_illegal_40_timestamps = 0;
                 size_t trg_n_160byte_parse_failures = 0;
+                size_t trg_n_header_ts_errors = 0;
+                uint64_t trg_n_idle_lines = 0;
+                uint64_t trg_n_skipped_lines = 0;
                 trigger_data_processing(const_cast<bp::TrgLine&>(last_trg_line), vldb_data_lines_buffer, n_trg_lines, 
                                         branch_fpga_id, branch_timestamp, branch_daqh_list, branch_tc_list, branch_tp_list,
                                         branch_val0_list, branch_val1_list, branch_val2_list, branch_crc32_list, branch_last_heartbeat,
-                                        output_tree, trg_n_illegal_40_timestamps, trg_n_160byte_parse_failures, n_trigger_header_ts_errors, n_legal_samples, recent_trig_line_timestamp);
+                                        output_tree, trg_n_illegal_40_timestamps, trg_n_160byte_parse_failures, trg_n_header_ts_errors, n_legal_samples, recent_trig_line_timestamp, trg_n_idle_lines, trg_n_skipped_lines, n_samples_in_total, n_samples_valid, global_verbose);
                 n_trigger_illegal_40_timestamps_vals.push_back(static_cast<double>(trg_n_illegal_40_timestamps));
                 n_trigger_illegal_40_timestamps += trg_n_illegal_40_timestamps;
                 n_trigger_160byte_parse_failures_vals.push_back(static_cast<double>(trg_n_160byte_parse_failures));
                 n_trigger_160byte_parse_failures += trg_n_160byte_parse_failures;
+                n_trigger_idle_lines_vals.push_back(static_cast<double>(trg_n_idle_lines));
+                n_trigger_header_ts_errors += trg_n_header_ts_errors;
+                n_trigger_header_ts_errors_vals.push_back(static_cast<double>(trg_n_header_ts_errors));
+                n_trigger_skipped_lines_vals.push_back(static_cast<double>(trg_n_skipped_lines));
             }
             if (!first_trigger_found) {
                 first_trigger_found = true;
@@ -831,6 +864,51 @@ int main(int argc, char** argv) {
     TParameter<double>("Avg_Trigger_160Byte_Parse_Failures", n_trigger_160byte_parse_failures_avg).Write();
     TParameter<double>("Err_Trigger_160Byte_Parse_Failures", n_trigger_160byte_parse_failures_err).Write();
 
+    double n_trigger_idle_lines_avg = 0.0;
+    double n_trigger_idle_lines_err = 0.0;
+    if (!n_trigger_idle_lines_vals.empty()) {
+        n_trigger_idle_lines_avg = std::accumulate(n_trigger_idle_lines_vals.begin(),
+                                                  n_trigger_idle_lines_vals.end(), 0.0);
+    }
+    n_trigger_idle_lines_avg /= static_cast<double>(n_trigger_idle_lines_vals.size());
+    for (const auto& val : n_trigger_idle_lines_vals) {
+        n_trigger_idle_lines_err += (val - n_trigger_idle_lines_avg) * (val - n_trigger_idle_lines_avg);
+    }
+    n_trigger_idle_lines_err = std::sqrt(n_trigger_idle_lines_err / static_cast<double>(n_trigger_idle_lines_vals.size()));
+    n_trigger_idle_lines_err /= std::sqrt(static_cast<double>(n_trigger_idle_lines_vals.size()));
+    TParameter<double>("Avg_Trigger_Idle_Lines", n_trigger_idle_lines_avg).Write();
+    TParameter<double>("Err_Trigger_Idle_Lines", n_trigger_idle_lines_err).Write();
+
+    double n_trigger_header_ts_errors_avg = 0.0;
+    double n_trigger_header_ts_errors_err = 0.0;
+    if (!n_trigger_header_ts_errors_vals.empty()) {
+        n_trigger_header_ts_errors_avg = std::accumulate(n_trigger_header_ts_errors_vals.begin(),
+                                                        n_trigger_header_ts_errors_vals.end(), 0.0);
+    }
+    n_trigger_header_ts_errors_avg /= static_cast<double>(n_trigger_header_ts_errors_vals.size());
+    for (const auto& val : n_trigger_header_ts_errors_vals) {
+        n_trigger_header_ts_errors_err += (val - n_trigger_header_ts_errors_avg) * (val - n_trigger_header_ts_errors_avg);
+    }
+    n_trigger_header_ts_errors_err = std::sqrt(n_trigger_header_ts_errors_err / static_cast<double>(n_trigger_header_ts_errors_vals.size()));
+    n_trigger_header_ts_errors_err /= std::sqrt(static_cast<double>(n_trigger_header_ts_errors_vals.size()));
+    TParameter<double>("Avg_Trigger_Header_Timestamp_Errors", n_trigger_header_ts_errors_avg).Write();
+    TParameter<double>("Err_Trigger_Header_Timestamp_Errors", n_trigger_header_ts_errors_err).Write();
+
+    double n_trigger_skipped_lines_avg = 0.0;
+    double n_trigger_skipped_lines_err = 0.0;
+    if (!n_trigger_skipped_lines_vals.empty()) {
+        n_trigger_skipped_lines_avg = std::accumulate(n_trigger_skipped_lines_vals.begin(),
+                                                     n_trigger_skipped_lines_vals.end(), 0.0);
+    }
+    n_trigger_skipped_lines_avg /= static_cast<double>(n_trigger_skipped_lines_vals.size());
+    for (const auto& val : n_trigger_skipped_lines_vals) {
+        n_trigger_skipped_lines_err += (val - n_trigger_skipped_lines_avg) * (val - n_trigger_skipped_lines_avg);
+    }
+    n_trigger_skipped_lines_err = std::sqrt(n_trigger_skipped_lines_err / static_cast<double>(n_trigger_skipped_lines_vals.size()));
+    n_trigger_skipped_lines_err /= std::sqrt(static_cast<double>(n_trigger_skipped_lines_vals.size()));
+    TParameter<double>("Avg_Trigger_Skipped_Lines", n_trigger_skipped_lines_avg).Write();
+    TParameter<double>("Err_Trigger_Skipped_Lines", n_trigger_skipped_lines_err).Write();
+
     std::string _legal_fpga_id_list_str = "";
     for (const auto& id : vldb_ids) {
         _legal_fpga_id_list_str += std::to_string(static_cast<int>(id)) + " ";
@@ -846,6 +924,10 @@ int main(int argc, char** argv) {
     TParameter<double>("Total_RDH_L1", static_cast<double>(n_rdh_l1)).Write();
     TParameter<double>("Total_Data_Lines", static_cast<double>(n_data_lines)).Write();
     TParameter<double>("Total_Trg_Lines", static_cast<double>(n_trg_lines)).Write();
+
+
+    TParameter<double>("Total_Samples_In_Total", static_cast<double>(n_samples_in_total)/32.0).Write();
+    TParameter<double>("Total_Valid_Samples", n_samples_valid/32.0).Write();
     output_root->Write();
     output_root->Close();
 

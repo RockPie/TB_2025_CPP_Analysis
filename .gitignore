@@ -17,8 +17,10 @@ config/tb-2025-oct-automation-53c24706c7ea.json
 dump/
 data/
 build/
+qa_plots/
 CRU_RDH_Decoder/
 .vscode/
 CMakeFiles/
 .snakemake/
 .env/
+__pycache__/

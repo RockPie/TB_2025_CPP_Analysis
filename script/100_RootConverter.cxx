@@ -11,6 +11,8 @@
 #include <string>
 #include <array>
 #include <unordered_set>
+#include <span>
+#include <numeric>  
 
 #include <TFile.h>
 #include <TTree.h>

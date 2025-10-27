@@ -10,9 +10,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---- Build type ----
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-endif()
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
 
 # ---- macOS-only settings (guarded) ----
 if(APPLE)
@@ -27,7 +26,10 @@ if(APPLE)
 endif()
 
 # ---- Dependencies ----
-find_package(ROOT 6.36 REQUIRED COMPONENTS
+# specify the root under /home/shihai/sw/root/root_install/bin/root
+set(ROOT_DIR "/home/shihai/sw/root/root_install")  # Adjust to your ROOT installation path
+list(APPEND CMAKE_PREFIX_PATH ${ROOT_DIR})
+find_package(ROOT REQUIRED COMPONENTS
   Core RIO Hist Tree TreePlayer MathCore Graf Gpad Rint Thread 
 )
 

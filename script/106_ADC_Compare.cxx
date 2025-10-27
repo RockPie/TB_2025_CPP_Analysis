@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
                     for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
                         double adc_integral = 0;
                         double adc_pedestal = 0;
-                        std::vector<int> adc_pedestal_samples;
+                        std::vector<UInt_t> adc_pedestal_samples;
                         for (int sample = 0; sample < machine_gun_samples; sample++) {
                             auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
                             if (sample < 3) {
@@ -353,7 +353,7 @@ int main(int argc, char **argv) {
                     for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
                         double adc_max = 0;
                         double adc_pedestal = 0;
-                        std::vector<int> adc_pedestal_samples;
+                        std::vector<UInt_t> adc_pedestal_samples;
                         for (int sample = 0; sample < machine_gun_samples; sample++) {
                             auto adc_value = val0_list_pools[vldb_id][0][FPGA_CHANNEL_NUMBER * sample + channel];
                             if (sample < 3) {

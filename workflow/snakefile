@@ -20,7 +20,7 @@ EOS_DIRS = {
     "labtests":  f"{EOS_BASE}/lab"
 }
 # ---- Load lxplus credentials (username/password in JSON) ----
-CRED_FILE = "/Volumes/GeoT7/TB_2025_Oct/config/lxplus.json"
+CRED_FILE = "config/lxplus.json"
 if not Path(CRED_FILE).exists():
     print(f"[WARN] Missing {CRED_FILE}. 'fetch_ch2g' rule will fail until you create it.")
 
@@ -47,6 +47,7 @@ FINAL_TARGETS_Waveform = [f"{DUMP_DIR}/201_Waveform/{p['dtype']}/{p['run']}.root
 FINAL_TARGETS_EventToA = [f"{DUMP_DIR}/202_EventToA/{p['dtype']}/{p['run']}.root" for p in pairs]
 
 FINAL_X_TARGETS_ROOT = [f"{DUMP_DIR}/300_RootConverterX/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_X_TARGETS_MG = [f"{DUMP_DIR}/301_EventReconX/{p['dtype']}/{p['run']}_mg.root" for p in pairs]
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -56,10 +57,11 @@ rule all:
         FINAL_TARGETS_HITMAP,
         FINAL_TARGETS_ADC,
         FINAL_TARGETS_ToAToTStart,
-        ALL_106_OUTPUTS,
+        # ALL_106_OUTPUTS,
         FINAL_TARGETS_Waveform,
         FINAL_TARGETS_EventToA,
-        FINAL_X_TARGETS_ROOT
+        FINAL_X_TARGETS_ROOT,
+        FINAL_X_TARGETS_MG
 
 # =========================
 # Build system integration
@@ -319,4 +321,20 @@ rule RootConverterX:
         mkdir -p {DUMP_DIR}/300_RootConverterX/{wildcards.dtype}
         mkdir -p {LOG_DIR}/300_RootConverterX/{wildcards.dtype}
         {input.exe} -i {input.ch2g} -o {output.root} > {log} 2>&1
+        """
+
+# Stage 301: EventReconX
+rule EventReconX:
+    input:
+        exe     = f"{BIN_DIR}/301_EventReconX",
+        root_in = f"{DUMP_DIR}/300_RootConverterX/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/301_EventReconX/{{dtype}}/{{run}}_mg.root"
+    log:
+        f"{LOG_DIR}/301_EventReconX/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/301_EventReconX/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/301_EventReconX/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """

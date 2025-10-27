@@ -10,6 +10,13 @@
 #include <sstream>
 #include <cstdlib>
 #include <system_error>
+#include <numeric>
+#include <span>
+#include <vector>
+#include <map>
+#include <limits>
+#include <algorithm>
+#include <cstdint>
 
 #include "TCanvas.h"
 #include "TVectorD.h"
@@ -522,5 +529,41 @@ private:
 
     std::vector <TCanvas*> sub_canvas_list;
 };
+
+
+inline int64_t posmod(int64_t a, int64_t m) {
+    int64_t r = a % m;
+    return (r < 0) ? (r + m) : r; // [0, m)
+}
+
+inline bool is_0_or_half_mod(int64_t value, int64_t period, int64_t tol) {
+    // distance to 0 (i.e., k*period)
+    int64_t r = posmod(value, period);
+    int64_t dist0 = std::min(r, period - r);
+
+    // distance to half-period (i.e., k*period + period/2)
+    int64_t half = period / 2; // assume even period (40)
+    int64_t d = std::llabs(r - half);
+    int64_t distHalf = std::min(d, period - d);
+
+    return (dist0 <= tol) || (distHalf <= tol);
+}
+
+// Accept normal, half-period, and ±1-bit slip (×2 or ÷2) cases
+inline bool is_aligned_with_bit_slip(int64_t diff, int64_t period, int64_t tol) {
+    if (is_0_or_half_mod(diff, period, tol)) return true;
+
+    // Consider a left-shift (current diff ≈ 2 * correct) → undo with /2
+    int64_t halfDiff = diff / 2; // truncates toward 0; tol should cover 1-tick rounding
+    if (is_0_or_half_mod(halfDiff, period, tol)) return true;
+
+    // Consider a right-shift (current diff ≈ correct / 2) → undo with *2 (safely)
+    if (std::llabs(diff) <= (std::numeric_limits<int64_t>::max() / 2)) {
+        int64_t doubleDiff = diff * 2;
+        if (is_0_or_half_mod(doubleDiff, period, tol)) return true;
+    }
+
+    return false;
+}
 
 #endif // COMMON_HPP
