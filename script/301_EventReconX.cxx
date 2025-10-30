@@ -578,7 +578,7 @@ int main(int argc, char **argv){
     TParameter<double>("EventRecon_good_machine_gun_events_ratio", 
         static_cast<double>(good_machine_gun_events) /
         static_cast<double>(good_machine_gun_events + bad_machine_gun_events) * 100.0).Write();
-    TParameter<int>("EventRecon_machine_gun_samples", machine_gun_samples).Write();
+    TParameter<int>("EventRecon_machine_gun_value", machine_gun_samples).Write();
     
     output_root->Close();
     return 0;

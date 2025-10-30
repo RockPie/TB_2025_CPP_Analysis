@@ -37,6 +37,7 @@
 #include "TPaveText.h"
 #include "TFrame.h"
 #include "TVirtualFitter.h"
+#include "TParameter.h"
 
 #include <ROOT/RDataFrame.hxx>
 #include <ROOT/TThreadExecutor.hxx>

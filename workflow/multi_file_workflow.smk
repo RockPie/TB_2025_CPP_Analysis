@@ -30,7 +30,8 @@ def _inputs_for_outfile(outfile_name: str):
     ins = []
     for n in cfg.get("run_numbers", []):
         rn = f"{int(n):04d}"
-        ins.append(f"{DUMP_DIR}/102_EventMatch/beamtests/Run{rn}.root")
+        # ins.append(f"{DUMP_DIR}/102_EventMatch/beamtests/Run{rn}.root")
+        ins.append(f"{DUMP_DIR}/302_EventMatchX/beamtests/Run{rn}_em.root")
     return ins
 
 # All final outputs discovered now (parse-time)

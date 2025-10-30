@@ -9,6 +9,7 @@
 #include "TTree.h"
 #include "TApplication.h"
 #include "TGaxis.h"
+#include "TParameter.h"
 #include <vector>
 #include <unordered_map>
 #include <sstream>
@@ -727,7 +728,15 @@ int main(int argc, char **argv){
     TNamed("EventMatch_script_output_folder", script_output_folder.c_str()).Write();
     // -- Write the running info
     TNamed("EventMatch_total_matched_events", std::to_string(total_matched_events).c_str()).Write();
-    
+    if (entry_max > 0 && fpga_number > 0) {
+        double matched_percentage = static_cast<double>(total_matched_events) / (entry_max) * fpga_number * 100.0;
+        TParameter<double> tparam_matched_percentage("EventMatch_matched_percentage", matched_percentage);
+        tparam_matched_percentage.Write();
+    } else {
+        TParameter<double> tparam_matched_percentage("EventMatch_matched_percentage", 0.0);
+        tparam_matched_percentage.Write();
+    }
+
     for (int i = 0; i < fpga_number; i++) {
         delete[] branch_timestamps_list[i];
         delete[] branch_daqh_list_list[i];

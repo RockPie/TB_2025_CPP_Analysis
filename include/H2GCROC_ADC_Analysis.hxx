@@ -114,55 +114,194 @@ inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_
 {
     if (!pad || !obj) return;
     pad->cd();
+
     pad->SetMargin(0, 0, 0, 0);
     pad->SetBorderMode(0);
     pad->SetFrameBorderMode(0);
     pad->SetFillStyle(0);
 
-    if (auto* h2 = dynamic_cast<TH2*>(obj)) {
+    // --- TH2* ---
+    if (obj->InheritsFrom(TH2::Class())) {
+        auto* h2 = static_cast<TH2*>(obj);
         h2->SetStats(0);
-        if (minimalist_axis) {
-            h2->GetXaxis()->SetLabelSize(0);
-            h2->GetYaxis()->SetLabelSize(0);
-            h2->GetXaxis()->SetTitleSize(0);
-            h2->GetYaxis()->SetTitleSize(0);
-            h2->GetXaxis()->SetTickLength(0);
-            h2->GetYaxis()->SetTickLength(0);
-        }
         pad->SetLogz(th2_logz ? 1 : 0);
-        h2->Draw("COLZ");
+        h2->Draw("COLZ");                 // 先画再调（TH2 轴始终存在，但保持一致风格）
+
+        if (minimalist_axis) {
+            auto *xa = h2->GetXaxis(), *ya = h2->GetYaxis(), *za = h2->GetZaxis();
+            if (xa) { xa->SetLabelSize(0); xa->SetTitleSize(0); xa->SetTickLength(0); }
+            if (ya) { ya->SetLabelSize(0); ya->SetTitleSize(0); ya->SetTickLength(0); }
+            if (za) { za->SetLabelSize(0); za->SetTitleSize(0); }
+        }
+        pad->Modified();
         return;
     }
-    if (auto* h1 = dynamic_cast<TH1*>(obj)) {
+
+    // --- TH1* ---
+    if (obj->InheritsFrom(TH1::Class())) {
+        auto* h1 = static_cast<TH1*>(obj);
         h1->SetStats(0);
-        if (minimalist_axis) {
-            h1->GetXaxis()->SetLabelSize(0);
-            h1->GetYaxis()->SetLabelSize(0);
-            h1->GetXaxis()->SetTitleSize(0);
-            h1->GetYaxis()->SetTitleSize(0);
-            h1->GetXaxis()->SetTickLength(0);
-            h1->GetYaxis()->SetTickLength(0);
-        }
         pad->SetLogz(0);
-        h1->Draw("HIST");
+        h1->Draw("HIST");                 // 先画
+        if (minimalist_axis) {
+            auto *xa = h1->GetXaxis(), *ya = h1->GetYaxis();
+            if (xa) { xa->SetLabelSize(0); xa->SetTitleSize(0); xa->SetTickLength(0); }
+            if (ya) { ya->SetLabelSize(0); ya->SetTitleSize(0); ya->SetTickLength(0); }
+        }
+        pad->Modified();
         return;
     }
-    if (auto* gr = dynamic_cast<TGraphErrors*>(obj)) {
-        if (minimalist_axis) {
-            gr->GetXaxis()->SetLabelSize(0);
-            gr->GetYaxis()->SetLabelSize(0);
-            gr->GetXaxis()->SetTitleSize(0);
-            gr->GetYaxis()->SetTitleSize(0);
-            gr->GetXaxis()->SetTickLength(0);
-            gr->GetYaxis()->SetTickLength(0);
-        }
+
+    // --- TGraphErrors* / TGraph* ---
+    if (obj->InheritsFrom(TGraphErrors::Class()) || obj->InheritsFrom(TGraph::Class())) {
+        auto* gr = static_cast<TGraph*>(obj); // TGraphErrors 也继承自 TGraph
         pad->SetLogz(0);
-        gr->Draw("APL");
+        gr->Draw("AP");                  // 一定先画，这一步会生成内部的 fHistogram 和轴
+        if (minimalist_axis) {
+            // 对图的轴要通过 GetHistogram() 再取轴，且可能为空，需判空
+            if (auto* hframe = gr->GetHistogram()) {
+                auto *xa = hframe->GetXaxis(), *ya = hframe->GetYaxis();
+                if (xa) { xa->SetLabelSize(0); xa->SetTitleSize(0); xa->SetTickLength(0); }
+                if (ya) { ya->SetLabelSize(0); ya->SetTitleSize(0); ya->SetTickLength(0); }
+            }
+        }
+        pad->Modified();
         return;
     }
+
+    // --- 兜底 ---
     pad->SetLogz(0);
     obj->Draw();
+    pad->Modified();
 }
+
+inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+    canvas->cd();
+    hist->SetLineColor(line_color);
+    hist->SetLineWidth(2);
+    hist->GetXaxis()->SetTitleSize(0.05);
+    hist->GetYaxis()->SetTitleSize(0.05);
+    hist->GetXaxis()->SetLabelSize(0.04);
+    hist->GetYaxis()->SetLabelSize(0.04);
+    hist->GetXaxis()->SetTitleOffset(0.8);
+    hist->GetYaxis()->SetTitleOffset(1.0);
+    auto y_max = hist->GetMaximum();
+    hist->SetMaximum(y_max * 1.3);
+    hist->SetStats(kFALSE);
+    hist->SetTitle("");
+    hist->Draw();
+    TLatex latex;
+    const double text_x = 0.12;
+    const double text_y_start = 0.85;
+    const double text_y_step = 0.05;
+    latex.SetNDC();
+    latex.SetTextSize(0.05);
+    latex.SetTextFont(62);
+    latex.DrawLatex(text_x, text_y_start, canvas_title.c_str());
+    latex.SetTextSize(0.04);
+    latex.SetTextFont(42);
+    latex.DrawLatex(text_x, text_y_start - text_y_step, testbeam_title.c_str());
+    latex.DrawLatex(text_x, text_y_start - 2 * text_y_step, canvas_info.c_str());
+    // write date
+    auto now = std::time(nullptr);
+    auto tm = *std::localtime(&now);
+    char date_buffer[100];
+    std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
+    latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    canvas->Modified();
+    canvas->Update();
+}
+
+inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+    canvas->cd();
+    hist->SetLineColor(line_color);
+    hist->SetLineWidth(2);
+    hist->GetXaxis()->SetTitleSize(0.05);
+    hist->GetYaxis()->SetTitleSize(0.05);
+    hist->GetXaxis()->SetLabelSize(0.04);
+    hist->GetYaxis()->SetLabelSize(0.04);
+    hist->GetXaxis()->SetTitleOffset(0.8);
+    hist->GetYaxis()->SetTitleOffset(1.0);
+    hist->SetStats(kFALSE);
+    hist->SetTitle("");
+    hist->Draw("COLZ");
+    TLatex latex;
+    const double text_x = 0.12;
+    const double text_y_start = 0.85;
+    const double text_y_step = 0.05;
+    latex.SetNDC();
+    latex.SetTextSize(0.05);
+    latex.SetTextFont(62);
+    latex.DrawLatex(text_x, text_y_start, canvas_title.c_str());
+    latex.SetTextSize(0.04);
+    latex.SetTextFont(42);
+    latex.DrawLatex(text_x, text_y_start - text_y_step, testbeam_title.c_str());
+    latex.DrawLatex(text_x, text_y_start - 2 * text_y_step, canvas_info.c_str());
+    // write date
+    auto now = std::time(nullptr);
+    auto tm = *std::localtime(&now);
+    char date_buffer[100];
+    std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
+    latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    // logz
+    canvas->SetLogz(1);
+    canvas->Modified();
+    canvas->Update();
+}
+
+// inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_logz)
+// {
+//     if (!pad || !obj) return;
+//     pad->cd();
+//     pad->SetMargin(0, 0, 0, 0);
+//     pad->SetBorderMode(0);
+//     pad->SetFrameBorderMode(0);
+//     pad->SetFillStyle(0);
+
+//     if (auto* h2 = dynamic_cast<TH2*>(obj)) {
+//         h2->SetStats(0);
+//         if (minimalist_axis) {
+//             h2->GetXaxis()->SetLabelSize(0);
+//             h2->GetYaxis()->SetLabelSize(0);
+//             h2->GetXaxis()->SetTitleSize(0);
+//             h2->GetYaxis()->SetTitleSize(0);
+//             h2->GetXaxis()->SetTickLength(0);
+//             h2->GetYaxis()->SetTickLength(0);
+//         }
+//         pad->SetLogz(th2_logz ? 1 : 0);
+//         h2->Draw("COLZ");
+//         return;
+//     }
+//     if (auto* h1 = dynamic_cast<TH1*>(obj)) {
+//         h1->SetStats(0);
+//         if (minimalist_axis) {
+//             h1->GetXaxis()->SetLabelSize(0);
+//             h1->GetYaxis()->SetLabelSize(0);
+//             h1->GetXaxis()->SetTitleSize(0);
+//             h1->GetYaxis()->SetTitleSize(0);
+//             h1->GetXaxis()->SetTickLength(0);
+//             h1->GetYaxis()->SetTickLength(0);
+//         }
+//         pad->SetLogz(0);
+//         h1->Draw("HIST");
+//         return;
+//     }
+//     if (auto* gr = dynamic_cast<TGraphErrors*>(obj)) {
+//         if (minimalist_axis) {
+//             gr->GetXaxis()->SetLabelSize(0);
+//             gr->GetYaxis()->SetLabelSize(0);
+//             gr->GetXaxis()->SetTitleSize(0);
+//             gr->GetYaxis()->SetTitleSize(0);
+//             gr->GetXaxis()->SetTickLength(0);
+//             gr->GetYaxis()->SetTickLength(0);
+//         }
+//         pad->SetLogz(0);
+//         gr->Draw("APL");
+//         return;
+//     }
+//     pad->SetLogz(0);
+//     obj->Draw();
+// }
 
 // ============ 无缝网格 ============
 inline void build_gapless_grid(TCanvas& canvas, int NX, int NY,

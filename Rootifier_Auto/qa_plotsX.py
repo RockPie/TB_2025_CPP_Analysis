@@ -1,5 +1,6 @@
 import lib_plotting
 import ROOT, os, json, time
+import numpy as np
 
 ROOT.gROOT.SetBatch(True)
 
@@ -21,18 +22,23 @@ for color_hex, run_info in color_json.items():
     channel_color_map[run_number]["description"] = description
 
 list_root_file_folders = [
-    "dump/301_EventReconX/beamtests"
+    "dump/301_EventReconX/beamtests",
+    "dump/302_EventMatchX/beamtests",
+    "dump/303_Pedestal/beamtests"
 ]
 list_root_file_info_str = [
-    "EventReconX_Beamtests"
+    "EventReconX_Beamtests",
+    "EventMatchX_Beamtests",
+    "Pedestal_Beamtests"
 ]
 
-set_TParameter_names = set()
-list_TParameter_lists = []
-list_TParameter_runs = []
+
 
 # for each folder, create plots of all TParameters
 for folder_index, root_file_folder in enumerate(list_root_file_folders):
+    set_TParameter_names = set()
+    list_TParameter_lists = []
+    list_TParameter_runs = []
     root_file_list = [f for f in os.listdir(root_file_folder) if f.endswith(".root")]
     run_numbers = []
     for root_file_name in root_file_list:
@@ -40,6 +46,7 @@ for folder_index, root_file_folder in enumerate(list_root_file_folders):
         for part in parts:
             if part.startswith("Run"):
                 run_number_str = part.replace("Run", "")
+                run_number_str = run_number_str.replace(".root", "")
                 if run_number_str.isdigit():
                     run_numbers.append(int(run_number_str))
     print(f"Found {len(run_numbers)} runs in folder {root_file_folder}")
@@ -80,41 +87,44 @@ for folder_index, root_file_folder in enumerate(list_root_file_folders):
                     list_TParameter_runs.append(run_number_str)
         root_file.Close()
 
-# create plots for each TParameter
-output_plot_folder = "qa_plots/TParameter_Plots"
-os.makedirs(output_plot_folder, exist_ok=True)
+    # create plots for each TParameter
+    output_plot_folder = "qa_plots/TParameter_PlotsX/" + list_root_file_info_str[folder_index]
+    os.makedirs(output_plot_folder, exist_ok=True)
 
-# sort the values in each TParameter list by run number
-for index in range(len(list_TParameter_lists)):
-    list_TParameter_lists[index].sort(key=lambda x: run_numbers.index(int(list_TParameter_runs[index])))
-sorted_run_numbers = sorted(run_numbers)
-run_to_color =  {r: info["color"] for r, info in channel_color_map.items()}
-run_to_text  = {r: info.get("description", "") for r, info in channel_color_map.items()}
+    # sort the values in each TParameter list by run number
+    for index in range(len(list_TParameter_lists)):
+        list_TParameter_lists[index].sort(key=lambda x: run_numbers.index(int(list_TParameter_runs[index])))
+    sorted_run_numbers = sorted(run_numbers)
+    run_to_color =  {r: info["color"] for r, info in channel_color_map.items()}
+    run_to_text  = {r: info.get("description", "") for r, info in channel_color_map.items()}
 
-for index, TParameter_name in enumerate(set_TParameter_names):
-    title_lines = [
-        "FoCal-H Prototype 3",
-        "Beam Test 2025 Oct",
-        f"TParameter: {TParameter_name}",
-        time.strftime("Date: %Y-%m-%d")
-    ]
-    out_pdf_file = os.path.join(output_plot_folder, f"TParameter_{TParameter_name}.pdf")
+    for index, TParameter_name in enumerate(set_TParameter_names):
+        title_lines = [
+            "FoCal-H Prototype 3",
+            "Beam Test 2025 Oct",
+            f"TParameter: {TParameter_name}",
+            time.strftime("Date: %Y-%m-%d")
+        ]
+        out_pdf_file = os.path.join(output_plot_folder, f"TParameter_{TParameter_name}.pdf")
 
-    lib_plotting.draw_run_categorical_bands_scatter(
-        runs=sorted_run_numbers,
-        y_values=[x for x in list_TParameter_lists[index]],
-        y_errors=[0 for _ in list_TParameter_lists[index]],
-        run_to_color=run_to_color,
-        output_pdf=out_pdf_file,
-        y_min=0,
-        y_max=max([x for x in list_TParameter_lists[index]]) * 2.0,
-        logy=False,
-        band_shrink=0.00,
-        y_label=TParameter_name,
-        x_label="Run Number",
-        title_lines=title_lines,
-        run_to_text=run_to_text,
-        png_also=False,
-        root_also=os.path.join(output_plot_folder, f"TParameter_{TParameter_name}.root")
-    )
+        # get the 90% max y
+        y_max_90 = np.percentile(list_TParameter_lists[index], 90)
+
+        lib_plotting.draw_run_categorical_bands_scatter(
+            runs=sorted_run_numbers,
+            y_values=[x for x in list_TParameter_lists[index]],
+            y_errors=[0 for _ in list_TParameter_lists[index]],
+            run_to_color=run_to_color,
+            output_pdf=out_pdf_file,
+            y_min=0,
+            y_max=y_max_90 * 1.5,
+            logy=False,
+            band_shrink=0.00,
+            y_label=TParameter_name,
+            x_label="Run Number",
+            title_lines=title_lines,
+            run_to_text=run_to_text,
+            png_also=False,
+            root_also=os.path.join(output_plot_folder, f"TParameter_{TParameter_name}.root")
+        )
 
