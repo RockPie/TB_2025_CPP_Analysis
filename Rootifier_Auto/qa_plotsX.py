@@ -24,12 +24,14 @@ for color_hex, run_info in color_json.items():
 list_root_file_folders = [
     "dump/301_EventReconX/beamtests",
     "dump/302_EventMatchX/beamtests",
-    "dump/303_Pedestal/beamtests"
+    "dump/303_Pedestal/beamtests",
+    "dump/306_ToA_Correction/beamtests"
 ]
 list_root_file_info_str = [
     "EventReconX_Beamtests",
     "EventMatchX_Beamtests",
-    "Pedestal_Beamtests"
+    "Pedestal_Beamtests",
+    "ToA_Correction_Beamtests"
 ]
 
 

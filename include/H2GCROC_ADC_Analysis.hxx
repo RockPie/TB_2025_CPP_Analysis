@@ -1,3 +1,6 @@
+#ifndef H2GCROC_ADC_ANALYSIS_HXX
+#define H2GCROC_ADC_ANALYSIS_HXX
+
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -176,6 +179,43 @@ inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_
 }
 
 inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+    canvas->cd();
+    hist->SetLineColor(line_color);
+    hist->SetLineWidth(2);
+    hist->GetXaxis()->SetTitleSize(0.05);
+    hist->GetYaxis()->SetTitleSize(0.05);
+    hist->GetXaxis()->SetLabelSize(0.04);
+    hist->GetYaxis()->SetLabelSize(0.04);
+    hist->GetXaxis()->SetTitleOffset(0.8);
+    hist->GetYaxis()->SetTitleOffset(1.0);
+    auto y_max = hist->GetMaximum();
+    hist->SetMaximum(y_max * 1.3);
+    hist->SetStats(kFALSE);
+    hist->SetTitle("");
+    hist->Draw();
+    TLatex latex;
+    const double text_x = 0.12;
+    const double text_y_start = 0.85;
+    const double text_y_step = 0.05;
+    latex.SetNDC();
+    latex.SetTextSize(0.05);
+    latex.SetTextFont(62);
+    latex.DrawLatex(text_x, text_y_start, canvas_title.c_str());
+    latex.SetTextSize(0.04);
+    latex.SetTextFont(42);
+    latex.DrawLatex(text_x, text_y_start - text_y_step, testbeam_title.c_str());
+    latex.DrawLatex(text_x, text_y_start - 2 * text_y_step, canvas_info.c_str());
+    // write date
+    auto now = std::time(nullptr);
+    auto tm = *std::localtime(&now);
+    char date_buffer[100];
+    std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
+    latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    canvas->Modified();
+    canvas->Update();
+}
+
+inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
     canvas->cd();
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
@@ -407,6 +447,13 @@ inline void draw_mosaic_fixed(TCanvas& canvas,
         TObject* obj = items[i];
         if (!obj) continue;
 
+        // Skip empty histograms
+        if (auto* h1 = dynamic_cast<TH1*>(obj)) {
+            if (h1->GetEntries() == 0) continue;
+        } else if (auto* gr = dynamic_cast<TGraph*>(obj)) {
+            if (gr->GetN() == 0) continue;
+        }
+
         int pad_lnr = topo.chan2pad[i];
         if (pad_lnr < 0 || pad_lnr >= pad_count) continue;
 
@@ -435,6 +482,15 @@ inline void draw_mosaic_fixed(TCanvas& canvas,
     std::vector<TObject*> objs; objs.reserve(h1.size());
     for (auto* p : h1) objs.push_back(static_cast<TObject*>(p));
     // 对 TH1*，如果你不想 LogZ，在构建 topo 时把 th2_logz=false 即可（只影响 TH2）
+    draw_mosaic_fixed(canvas, objs, topo);
+}
+
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TGraph*>& gr,
+                              const MosaicTopology& topo)
+{
+    std::vector<TObject*> objs; objs.reserve(gr.size());
+    for (auto* p : gr) objs.push_back(static_cast<TObject*>(p));
     draw_mosaic_fixed(canvas, objs, topo);
 }
 
@@ -521,3 +577,5 @@ std::vector<int> build_chan2pad_LUT(
     }
     return lut;
 }
+
+#endif // H2GCROC_ADC_ANALYSIS_HXX

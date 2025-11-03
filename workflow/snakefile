@@ -52,6 +52,8 @@ FINAL_X_TARGETS_EventMatch = [f"{DUMP_DIR}/302_EventMatchX/{p['dtype']}/{p['run'
 
 FINAL_PEDESTAL_TARGETS = [f"{DUMP_DIR}/303_Pedestal/{p['dtype']}/{p['run']}.root" for p in pairs]
 FINAL_RAWADC_TARGETS = [f"{DUMP_DIR}/304_RawADC/{p['dtype']}/{p['run']}.root" for p in pairs]
+
+FINAL_TOA_CORRECTION_TARGETS = [f"{DUMP_DIR}/306_ToA_Correction/{p['dtype']}/{p['run']}.root" for p in pairs]
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -66,7 +68,9 @@ rule all:
         FINAL_TARGETS_EventToA,
         FINAL_X_TARGETS_EventMatch,
         FINAL_PEDESTAL_TARGETS,
-        FINAL_RAWADC_TARGETS
+        FINAL_RAWADC_TARGETS,
+        ALL_305_OUTPUTS,
+        FINAL_TOA_CORRECTION_TARGETS
 
 # =========================
 # Build system integration
@@ -393,3 +397,19 @@ rule RawADC:
         mkdir -p {LOG_DIR}/304_RawADC/{wildcards.dtype}
         {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """ 
+
+# Stage 306: ToA_Correction
+rule ToA_Correction:
+    input:
+        exe     = f"{BIN_DIR}/306_ToA_Correction",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+    output:
+        root_out = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/306_ToA_Correction/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/306_ToA_Correction/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """

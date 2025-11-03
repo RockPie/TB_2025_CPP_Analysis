@@ -92,7 +92,7 @@ private:
 #define TB_LOG_LEVEL_DEBUG spdlog::level::debug
 
 #define CANVAS_TITLE "FoCal-H Prototype 3"
-#define TESTBEAM_TITLE "CERN SPS H2 2025 October Testbeam"
+#define TESTBEAM_TITLE "SPS H2 2025 October Testbeam"
 
 #ifndef LOG
 #define LOG(level) ::tb::logging::Stream(TB_LOG_LEVEL_##level)

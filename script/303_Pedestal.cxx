@@ -173,12 +173,20 @@ int main(int argc, char **argv) {
     pedestal_distribution_th2d->SetTitle("");
     pedestal_distribution_th2d->SetDirectory(nullptr);
 
+    TH2D* pedestal_distribution_average_th2d = new TH2D("pedestal_distribution_average", "Pedestal Distribution Average;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
+    pedestal_distribution_average_th2d->SetStats(0);
+    pedestal_distribution_average_th2d->SetTitle("");
+    pedestal_distribution_average_th2d->SetDirectory(nullptr);
+
     std::vector<double> event_adc_pedestal_list;
     event_adc_pedestal_list.reserve(entry_max);
+    std::vector<double> event_adc_pedestal_mean_list;
+    event_adc_pedestal_mean_list.reserve(entry_max);
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
         double adc_pedestal_sum = 0.0;
+        double adc_pedestal_mean_sum = 0.0;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
@@ -195,11 +203,15 @@ int main(int argc, char **argv) {
                 } // end of sample loop
                 // calculate the pedestal
                 double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal_mean = pedestal_average_of_first3(adc_pedestal_samples);
                 pedestal_distribution_th2d->Fill(double(vldb_id)*double(FPGA_CHANNEL_NUMBER_VALID) + double(channel), adc_pedestal);
+                pedestal_distribution_average_th2d->Fill(double(vldb_id)*double(FPGA_CHANNEL_NUMBER_VALID) + double(channel), adc_pedestal_mean);
                 adc_pedestal_sum += adc_pedestal;
+                adc_pedestal_mean_sum += adc_pedestal_mean;
             } // end of channel loop
         } // end of vldb loop
         event_adc_pedestal_list.push_back(adc_pedestal_sum);
+        event_adc_pedestal_mean_list.push_back(adc_pedestal_mean_sum);
     } // end of event loop
     input_root->Close();
 
@@ -225,6 +237,14 @@ int main(int argc, char **argv) {
     // pedestal_distribution_canvas->SetLogz();
     pedestal_distribution_canvas->Write();
     pedestal_distribution_canvas->Close();
+
+    auto pedestal_distribution_average_canvas = new TCanvas("pedestal_distribution_average_canvas", "Pedestal Distribution Average Canvas", 800, 600);
+    pedestal_distribution_average_canvas->cd();
+    pedestal_distribution_average_canvas->SetLogz();
+    pedestal_distribution_average_th2d->Draw("COLZ");
+    // pedestal_distribution_average_canvas->SetLogz();
+    pedestal_distribution_average_canvas->Write();
+    pedestal_distribution_average_canvas->Close();
 
     TCanvas *pedestal_distribution_1d_canvas = new TCanvas("pedestal_distribution_1d_canvas", "Pedestal Distribution 1D Canvas", 800, 600);
     pedestal_distribution_1d_canvas->cd();
