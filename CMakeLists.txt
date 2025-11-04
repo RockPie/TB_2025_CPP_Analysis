@@ -84,6 +84,15 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+# --- Fetch Eigen ---
+FetchContent_Declare(
+  eigen
+  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+  GIT_TAG 3.4.0
+)
+
+FetchContent_MakeAvailable(eigen)
+
 # ---- Build one exe per script ----
 set(SCRIPT_TARGETS)
 foreach(src IN LISTS SCRIPT_SOURCES)
@@ -100,6 +109,7 @@ foreach(src IN LISTS SCRIPT_SOURCES)
         spdlog::spdlog
         binparse::binparse
         nlohmann_json::nlohmann_json
+        Eigen3::Eigen
         ROOT::Core ROOT::RIO ROOT::Hist ROOT::Tree ROOT::MathCore
         ROOT::Graf ROOT::Gpad
         Threads::Threads

@@ -113,7 +113,7 @@ inline double pedestal_sigma_clipping(const std::vector<int>& data, double k, in
     return mean_and_sigma(cur).first;
 }
 
-inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_logz)
+inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_logz, TF1* fit_func = nullptr)
 {
     if (!pad || !obj) return;
     pad->cd();
@@ -145,11 +145,15 @@ inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_
         auto* h1 = static_cast<TH1*>(obj);
         h1->SetStats(0);
         pad->SetLogz(0);
-        h1->Draw("HIST");                 // 先画
+        h1->Draw("HIST");                 // 先画再调
         if (minimalist_axis) {
             auto *xa = h1->GetXaxis(), *ya = h1->GetYaxis();
             if (xa) { xa->SetLabelSize(0); xa->SetTitleSize(0); xa->SetTickLength(0); }
             if (ya) { ya->SetLabelSize(0); ya->SetTitleSize(0); ya->SetTickLength(0); }
+        }
+        if (fit_func) {
+            fit_func->SetLineColor(kRed);
+            fit_func->Draw("SAME");
         }
         pad->Modified();
         return;
@@ -215,6 +219,40 @@ inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_c
     canvas->Update();
 }
 
+inline void format_tgrapherr_canvas(TCanvas* canvas, TGraphErrors* graph, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+    canvas->cd();
+    graph->SetLineColor(line_color);
+    graph->SetLineWidth(2);
+    graph->GetXaxis()->SetTitleSize(0.05);
+    graph->GetYaxis()->SetTitleSize(0.05);
+    graph->GetXaxis()->SetLabelSize(0.04);
+    graph->GetYaxis()->SetLabelSize(0.04);
+    graph->GetXaxis()->SetTitleOffset(0.8);
+    graph->GetYaxis()->SetTitleOffset(1.0);
+    graph->SetTitle("");
+    graph->Draw("AP");
+    TLatex latex;
+    const double text_x = 0.12;
+    const double text_y_start = 0.85;
+    const double text_y_step = 0.05;
+    latex.SetNDC();
+    latex.SetTextSize(0.05);
+    latex.SetTextFont(62);
+    latex.DrawLatex(text_x, text_y_start, canvas_title.c_str());
+    latex.SetTextSize(0.04);
+    latex.SetTextFont(42);
+    latex.DrawLatex(text_x, text_y_start - text_y_step, testbeam_title.c_str());
+    latex.DrawLatex(text_x, text_y_start - 2 * text_y_step, canvas_info.c_str());
+    // write date
+    auto now = std::time(nullptr);
+    auto tm = *std::localtime(&now);
+    char date_buffer[100];
+    std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
+    latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    canvas->Modified();
+    canvas->Update();
+}
+
 inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
     canvas->cd();
     hist->SetLineColor(line_color);
@@ -252,8 +290,10 @@ inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_c
     canvas->Update();
 }
 
-inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info, bool logz=true) {
     canvas->cd();
+    // increase right margin for color palette
+    canvas->SetRightMargin(0.15);
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
     hist->GetXaxis()->SetTitleSize(0.05);
@@ -265,6 +305,7 @@ inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_c
     hist->SetStats(kFALSE);
     hist->SetTitle("");
     hist->Draw("COLZ");
+
     TLatex latex;
     const double text_x = 0.12;
     const double text_y_start = 0.85;
@@ -284,66 +325,12 @@ inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_c
     std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
     latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
     // logz
-    canvas->SetLogz(1);
+    if (logz)
+        canvas->SetLogz(1);
     canvas->Modified();
     canvas->Update();
 }
 
-// inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_logz)
-// {
-//     if (!pad || !obj) return;
-//     pad->cd();
-//     pad->SetMargin(0, 0, 0, 0);
-//     pad->SetBorderMode(0);
-//     pad->SetFrameBorderMode(0);
-//     pad->SetFillStyle(0);
-
-//     if (auto* h2 = dynamic_cast<TH2*>(obj)) {
-//         h2->SetStats(0);
-//         if (minimalist_axis) {
-//             h2->GetXaxis()->SetLabelSize(0);
-//             h2->GetYaxis()->SetLabelSize(0);
-//             h2->GetXaxis()->SetTitleSize(0);
-//             h2->GetYaxis()->SetTitleSize(0);
-//             h2->GetXaxis()->SetTickLength(0);
-//             h2->GetYaxis()->SetTickLength(0);
-//         }
-//         pad->SetLogz(th2_logz ? 1 : 0);
-//         h2->Draw("COLZ");
-//         return;
-//     }
-//     if (auto* h1 = dynamic_cast<TH1*>(obj)) {
-//         h1->SetStats(0);
-//         if (minimalist_axis) {
-//             h1->GetXaxis()->SetLabelSize(0);
-//             h1->GetYaxis()->SetLabelSize(0);
-//             h1->GetXaxis()->SetTitleSize(0);
-//             h1->GetYaxis()->SetTitleSize(0);
-//             h1->GetXaxis()->SetTickLength(0);
-//             h1->GetYaxis()->SetTickLength(0);
-//         }
-//         pad->SetLogz(0);
-//         h1->Draw("HIST");
-//         return;
-//     }
-//     if (auto* gr = dynamic_cast<TGraphErrors*>(obj)) {
-//         if (minimalist_axis) {
-//             gr->GetXaxis()->SetLabelSize(0);
-//             gr->GetYaxis()->SetLabelSize(0);
-//             gr->GetXaxis()->SetTitleSize(0);
-//             gr->GetYaxis()->SetTitleSize(0);
-//             gr->GetXaxis()->SetTickLength(0);
-//             gr->GetYaxis()->SetTickLength(0);
-//         }
-//         pad->SetLogz(0);
-//         gr->Draw("APL");
-//         return;
-//     }
-//     pad->SetLogz(0);
-//     obj->Draw();
-// }
-
-// ============ 无缝网格 ============
 inline void build_gapless_grid(TCanvas& canvas, int NX, int NY,
                                std::vector<std::vector<TPad*>>& pads)
 {
@@ -418,6 +405,56 @@ struct MosaicTopology {
     }
 };
 
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TObject*>& items,
+                              const std::vector<TF1*>& fits,
+                              const MosaicTopology& topo)
+{
+    if (!topo.valid()) return;
+    if (items.size() != fits.size()) return;
+
+    std::vector<std::vector<TPad*>> pads;
+    build_gapless_grid(canvas, topo.NX, topo.NY, pads);
+
+    const int pad_count = topo.NX * topo.NY;
+
+    // 预构建 pad* 的线性数组，O(1) 访问
+    std::vector<TPad*> pad_linear(pad_count, nullptr);
+    for (int r = 0; r < topo.NY; ++r) {
+        for (int c = 0; c < topo.NX; ++c) {
+            int pr = r;
+            if (topo.reverse_row) pr = (topo.NY - 1) - r; // 因为 pad_linear 用的就是最终的行序
+            pad_linear[pr * topo.NX + c] = pads[r][c];
+        }
+    }
+
+    const int n_items_expected = topo.vldb_number * topo.channels_per_vldb;
+    const int n_items = std::min<int>( (int)items.size(), n_items_expected );
+
+    for (int i = 0; i < n_items; ++i) {
+        TObject* obj = items[i];
+        TF1* fit = fits[i];
+        if (!obj || !fit) continue;
+
+        // Skip empty histograms
+        if (auto* h1 = dynamic_cast<TH1*>(obj)) {
+            if (h1->GetEntries() == 0) continue;
+        } else if (auto* gr = dynamic_cast<TGraph*>(obj)) {
+            if (gr->GetN() == 0) continue;
+        }
+
+        int pad_lnr = topo.chan2pad[i];
+        if (pad_lnr < 0 || pad_lnr >= pad_count) continue;
+
+        TPad* pad = pad_linear[pad_lnr];
+        if (!pad) continue;
+
+        draw_on_pad(pad, obj, topo.minimalist_axis, topo.th2_logz, fit);
+    }
+
+    canvas.Update();
+}
+
 // ============ 绘制：严格按拓扑顺序 ============
 inline void draw_mosaic_fixed(TCanvas& canvas,
                               const std::vector<TObject*>& items,
@@ -483,6 +520,25 @@ inline void draw_mosaic_fixed(TCanvas& canvas,
     for (auto* p : h1) objs.push_back(static_cast<TObject*>(p));
     // 对 TH1*，如果你不想 LogZ，在构建 topo 时把 th2_logz=false 即可（只影响 TH2）
     draw_mosaic_fixed(canvas, objs, topo);
+}
+
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TH1I*>& h1,
+                              const MosaicTopology& topo)
+{
+    std::vector<TObject*> objs; objs.reserve(h1.size());
+    for (auto* p : h1) objs.push_back(static_cast<TObject*>(p));
+    draw_mosaic_fixed(canvas, objs, topo);
+}
+
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TH1D*>& h1,
+                              const std::vector<TF1*>& fits,
+                              const MosaicTopology& topo)
+{
+    std::vector<TObject*> objs; objs.reserve(h1.size());
+    for (auto* p : h1) objs.push_back(static_cast<TObject*>(p));
+    draw_mosaic_fixed(canvas, objs, fits, topo);
 }
 
 inline void draw_mosaic_fixed(TCanvas& canvas,

@@ -22,6 +22,10 @@ int main(int argc, char **argv) {
 
     options.add_options()
         ("f,file", "Input .root file", cxxopts::value<std::string>())
+        ("c,correction", "Input ToA correction .root file", cxxopts::value<std::string>())
+        ("d,dnl", "Input DNL .root file", cxxopts::value<std::string>())
+        ("t,timewalk", "Input Timewalk correction .root file", cxxopts::value<std::string>())
+        ("O,offset", "Input ToA offset .root file", cxxopts::value<std::string>())
         ("o,output", "Output .root file", cxxopts::value<std::string>())
         ("e,events", "Number of events to process", cxxopts::value<int>()->default_value("-1"))
         ("v,verbose", "Verbose mode", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
@@ -101,27 +105,145 @@ int main(int argc, char **argv) {
 
     spdlog::info("Script name: {}", script_name);
     spdlog::info("Input file: {}", script_input_file);
+    spdlog::info("Input bx correction file: {}", parsed["correction"].as<std::string>());
     spdlog::info("Output file: {} in {}", script_output_file, script_output_folder);
     spdlog::info("Number of events: {}", script_n_events);
-
-    // std::string mapping_json_file = "config/mapping_Oct2025.json";
-    // std::ifstream mapping_json_ifs(mapping_json_file);
-    // if (!mapping_json_ifs.is_open()) {
-    //     spdlog::error("Failed to open mapping json file {}", mapping_json_file);
-    //     return 1;
-    // }
-    // json mapping_json;
-    // mapping_json_ifs >> mapping_json;
-    // const auto& sipm_board = mapping_json.at("SiPM_Board");
-    // const auto& board_loc = mapping_json.at("Board_Loc");
-    // const auto& board_rotation = mapping_json.at("Board_Rotation");
-    // const auto& board_flip = mapping_json.at("Board_Flip");
 
     // * --- Read input file ------------------------------------------------------------
     // * --------------------------------------------------------------------------------
     int machine_gun_samples = 16;
     int vldb_number = 2;
-    int chn_example = 299; // print this channel separately
+    int chn_example = 299; // print this channel seprately
+
+    TFile *input_correction_root = new TFile(parsed["correction"].as<std::string>().c_str(), "READ");
+    if (input_correction_root->IsZombie()) {
+        spdlog::error("Failed to open input correction file {}", parsed["correction"].as<std::string>());
+        return 1;
+    }
+    // read all channel correction optimal values
+    auto getParam = [](TDirectory* dir, const char* name, bool required = true) -> double {
+        TParameter<double>* p = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        p = dir->Get<TParameter<double>>(name);
+    #else
+        dir->GetObject(name, p);
+    #endif
+        if (!p) {
+            if (required) {
+                spdlog::error("Missing TParameter<double> key '{}' in directory '{}'",
+                            name, dir->GetPath());
+                throw std::runtime_error(std::string("Missing key: ") + name);
+            } else {
+                spdlog::warn("Missing optional key '{}' in directory '{}'; will use NaN.",
+                            name, dir->GetPath());
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+        return p->GetVal();
+    };
+    // go to "Optimal_Bx_Slip_Parameters" directory
+    input_correction_root->cd("Optimal_Bx_Slip_Parameters");
+    TDirectory* param_dir = gDirectory;
+    std::map<int, double> toa_correction_map;
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string param_name = "optimal_bx_slip_ch" + std::to_string(chn);
+        double optimal_value = getParam(param_dir, param_name.c_str());
+        toa_correction_map[chn] = optimal_value;
+        spdlog::info("Channel {}: optimal_bx_slip = {}", chn, optimal_value);
+    }
+    input_correction_root->Close();
+
+    TFile *input_timewalk_root = new TFile(parsed["timewalk"].as<std::string>().c_str(), "READ");
+    if (input_timewalk_root->IsZombie()) {
+        spdlog::error("Failed to open input timewalk file {}", parsed["timewalk"].as<std::string>());
+        return 1;
+    }
+    input_timewalk_root->cd("Optimal_ToA_ADC_Max_Correction_Parameters");
+    param_dir = gDirectory;
+    std::map<int, double> timewalk_param0_map;
+    std::map<int, double> timewalk_param1_map;
+    std::map<int, double> timewalk_param2_map;
+    std::map<int, double> timewalk_param3_map;
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string param_name0 = "toa_adc_max_corr_parm0_ch" + std::to_string(chn);
+        std::string param_name1 = "toa_adc_max_corr_parm1_ch" + std::to_string(chn);
+        std::string param_name2 = "toa_adc_max_corr_parm2_ch" + std::to_string(chn);
+        std::string param_name3 = "toa_adc_max_corr_parm3_ch" + std::to_string(chn);
+        double parm0 = getParam(param_dir, param_name0.c_str());
+        double parm1 = getParam(param_dir, param_name1.c_str());
+        double parm2 = getParam(param_dir, param_name2.c_str());
+        double parm3 = getParam(param_dir, param_name3.c_str());
+        timewalk_param0_map[chn] = parm0;
+        timewalk_param1_map[chn] = parm1;
+        timewalk_param2_map[chn] = parm2;
+        timewalk_param3_map[chn] = parm3;
+        spdlog::info("Channel {}: ToA ADC Max Correction Parameters = {}, {}, {}, {}",
+                     chn, parm0, parm1, parm2, parm3);
+    }
+    input_timewalk_root->Close();
+
+    TFile *input_dnl_root = new TFile(parsed["dnl"].as<std::string>().c_str(), "READ");
+    if (input_dnl_root->IsZombie()) {
+        spdlog::error("Failed to open input DNL file {}", parsed["dnl"].as<std::string>());
+        return 1;
+    }
+
+    std::vector<std::vector<double>> dnl_coarse_tdc_list(vldb_number* FPGA_CHANNEL_NUMBER);
+    std::vector<std::vector<double>> dnl_fine_tdc_list(vldb_number* FPGA_CHANNEL_NUMBER);
+    input_dnl_root->cd("DNL_Calibration");
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string dnl_coarse_name = "dnl_coarse_tdc_ch" + std::to_string(chn);
+        TVectorD* dnl_coarse_tdc = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        dnl_coarse_tdc = gDirectory->Get<TVectorD>(dnl_coarse_name.c_str());
+    #else
+        gDirectory->GetObject(dnl_coarse_name.c_str(), dnl_coarse_tdc);
+    #endif
+        if (!dnl_coarse_tdc) {
+            spdlog::error("Missing TVectorD key '{}' in directory '{}'",
+                        dnl_coarse_name, gDirectory->GetPath());
+            return 1;
+        }
+        std::vector<double> coarse_dnl(dnl_coarse_tdc->GetNoElements());
+        for (int idx = 0; idx < dnl_coarse_tdc->GetNoElements(); ++idx) {
+            coarse_dnl[idx] = (*dnl_coarse_tdc)[idx];
+        }
+        dnl_coarse_tdc_list[chn] = std::move(coarse_dnl);
+        std::string dnl_fine_name = "dnl_fine_tdc_ch" + std::to_string(chn);
+        TVectorD* dnl_fine_tdc = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        dnl_fine_tdc = gDirectory->Get<TVectorD>(dnl_fine_name.c_str());
+    #else
+        gDirectory->GetObject(dnl_fine_name.c_str(), dnl_fine_tdc);
+    #endif
+        if (!dnl_fine_tdc) {
+            spdlog::error("Missing TVectorD key '{}' in directory '{}'",
+                        dnl_fine_name, gDirectory->GetPath());
+            return 1;
+        }
+        std::vector<double> fine_dnl(dnl_fine_tdc->GetNoElements());
+        for (int idx = 0; idx < dnl_fine_tdc->GetNoElements(); ++idx) {
+            fine_dnl[idx] = (*dnl_fine_tdc)[idx];
+        }
+        dnl_fine_tdc_list[chn] = std::move(fine_dnl);
+    }
+    input_dnl_root->Close();
+
+    TFile *input_offset_root = new TFile(parsed["offset"].as<std::string>().c_str(), "READ");
+    if (input_offset_root->IsZombie()) {
+        spdlog::error("Failed to open input offset file {}", parsed["offset"].as<std::string>());
+        return 1;
+    }
+
+    input_offset_root->cd("ToA_Offsets");
+    std::map<int, double> toa_offset_map;
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string param_name = "toa_offset_ch" + std::to_string(chn);
+        double offset_value = getParam(gDirectory, param_name.c_str());
+        toa_offset_map[chn] = offset_value;
+        spdlog::info("Channel {}: ToA offset = {}", chn, offset_value);
+    }
+    input_offset_root->Close();
 
     TFile *input_root = new TFile(script_input_file.c_str(), "READ");
     if (input_root->IsZombie()) {
@@ -232,28 +354,122 @@ int main(int argc, char **argv) {
         h2d_toa_code_corr_list.push_back(h2d_toa_code_corr);
     }
 
-    std::vector<std::vector<UInt_t>> toa_code_matrix(FPGA_CHANNEL_NUMBER * vldb_number, std::vector<UInt_t>());
-    for (auto & vec : toa_code_matrix) {
-        vec.reserve(entry_max);
+    const int event_display_number = 20; // show the first 10 events for example
+
+    const int NX = 16, NY = 12;
+    const int board_cols = 8, board_rows = 4;
+    const int NPIX = NX * NY;
+    const int TOTAL_CH = FPGA_CHANNEL_NUMBER * vldb_number;
+
+    std::vector<int> ch2pid(TOTAL_CH, -1);
+    std::vector<int> pid2ch(NPIX, -1);
+
+    std::vector<TH2D*> event_display_adc_hitmap;
+    std::vector<TH2D*> event_display_toa_hitmap;
+    for (int ev=0; ev<event_display_number; ev++) {
+        std::string adc_hist_name = "event_" + std::to_string(ev) + "_adc_hitmap";
+        TH2D *adc_hitmap = new TH2D(adc_hist_name.c_str(), (adc_hist_name + ";Channel X;Channel Y;ADC Peak Value (pedestal subtracted)").c_str(),
+                                    NX, 0, NX,
+                                    NY, 0, NY);
+        adc_hitmap->SetDirectory(nullptr);
+        event_display_adc_hitmap.push_back(adc_hitmap);
+
+        std::string toa_hist_name = "event_" + std::to_string(ev) + "_toa_hitmap";
+        TH2D *toa_hitmap = new TH2D(toa_hist_name.c_str(), (toa_hist_name + ";Channel X;Channel Y;ToA (ns)").c_str(),
+                                    NX, 0, NX,
+                                    NY, 0, NY);
+        toa_hitmap->SetDirectory(nullptr);
+        event_display_toa_hitmap.push_back(toa_hitmap);
     }
-    std::vector<std::vector<double>> toa_ns_matrix(FPGA_CHANNEL_NUMBER * vldb_number, std::vector<double>());
-    for (auto & vec : toa_ns_matrix) {
-        vec.reserve(entry_max);
-    }
+
+    TH1D *h1d_event_average_toa = new TH1D("h1d_event_average_toa", "h1d_event_average_toa;Average ToA per Event (ns);Counts", 256, 0, 25.0*static_cast<double>(machine_gun_samples));
+    h1d_event_average_toa->SetDirectory(nullptr);
 
     const int adc_peak_min_index = 4;
     const int adc_peak_max_index = 8;
 
-    for (int entry = 0; entry < entry_max; entry++) {
-        input_tree->GetEntry(entry);
-        double adc_sum = 0.0;
-        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-            // channel loop
-            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                int channel_index_in_h2g = channel % 76;
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            int channel_index_in_h2g = channel % 76;
                 int channel_index_in_h2g_half = channel_index_in_h2g % 38;
                 int asic_id = channel / 76;
                 int half_id = channel_index_in_h2g / 38;
+
+                if (channel_index_in_h2g_half == 19)
+                    continue;
+                if (channel_index_in_h2g_half == 0)
+                    continue;
+
+                int channel_index_no_CM_Calib = channel_index_in_h2g_half;
+                
+                if (channel_index_in_h2g_half > 19)
+                    channel_index_no_CM_Calib -= 2;
+                else if (channel_index_in_h2g_half > 0)
+                    channel_index_no_CM_Calib -= 1;
+
+                std::string chn_key = std::to_string(channel_index_no_CM_Calib);
+                int col = -1, row = -1;
+                if (sipm_board.contains(chn_key)) {
+                    col = sipm_board.at(chn_key).at("col").get<int>();
+                    row = sipm_board.at(chn_key).at("row").get<int>();
+                }
+
+                std::string board_key = std::to_string(half_id + asic_id * 2 + vldb_id * 4);
+                int board_col = -1, board_row = -1;
+                // print board_key
+                // spdlog::info("Board Key: {} for VLDB {} Channel {}", board_key, vldb_id, channel);
+                int board_rotated = 0;
+                int board_flipped = 0;
+                if (board_loc.contains(board_key)) {
+                    board_col = board_loc.at(board_key).at("col").get<int>();
+                    board_row = board_loc.at(board_key).at("row").get<int>();
+                }
+                if (board_rotation.contains(board_key)) {
+                    board_rotated = board_rotation.at(board_key).get<int>();
+                }
+                if (board_flip.contains(board_key)) {
+                    board_flipped = board_flip.at(board_key).get<int>();
+                }
+
+                int uni_col = -1, uni_row = -1;
+                if (board_rotated == 0) {
+                    uni_col = board_col * board_cols + col;
+                    uni_row = board_row * board_rows + row;
+                } else {
+                    // rotate 180 degrees
+                    uni_col = board_col * board_cols + (board_cols - 1 - col);
+                    uni_row = board_row * board_rows + (board_rows - 1 - row);
+                }
+
+                if (uni_col < 0 || uni_col >= NX || uni_row < 0 || uni_row >= NY)
+                    continue;
+
+                const int pid = uni_row*NX + uni_col;
+                const int gch = channel + vldb_id*FPGA_CHANNEL_NUMBER;
+
+                ch2pid[gch] = pid;
+                if (pid2ch[pid] == -1) pid2ch[pid] = gch;
+        }
+    }
+
+    for (int entry = 0; entry < entry_max; entry++) {
+        input_tree->GetEntry(entry);
+        double adc_sum = 0.0;
+        double toa_weighted_sum = 0.0;
+        double toa_weight_total = 0.0;
+        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+            // channel loop
+            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                
+                int gch = channel + vldb_id * FPGA_CHANNEL_NUMBER;
+                int pid = ch2pid[gch];
+                if (pid == -1)
+                    continue;
+                int uni_col = pid % NX;
+                int uni_row = pid / NX;
+
+                if (uni_col < 0 || uni_col >= NX || uni_row < 0 || uni_row >= NY)
+                    continue;
 
                 std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
                 int adc_peak_index = -1;
@@ -304,26 +520,51 @@ int main(int argc, char **argv) {
                 h1i_toa_frequency->Fill(tot_showup_times);
                 if (toa_showup_times >= 1) {
                     num_single_ToA++;
-                    // only one ToA hit
-                    // apply correction here if needed
-                    double toa_ns = decode_toa_value_ns(toa_first_value);
+                    // * --- DNL correction ---
+                    auto& coarse_dnl_lookup = dnl_coarse_tdc_list[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    auto& fine_dnl_lookup = dnl_fine_tdc_list[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    // double toa_ns = decode_toa_value_ns(toa_first_value);
+                    double toa_ns = decode_toa_value_ns_with_dnl(
+                        toa_first_value,
+                        coarse_dnl_lookup,
+                        fine_dnl_lookup
+                    );
                     toa_ns += 25.0 * static_cast<double>(toa_first_index);
+                    // * --- bx slip correction ---
+                    double channel_optimal_bx_slip = toa_correction_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    if (toa_first_value >= static_cast<UInt_t>(channel_optimal_bx_slip)) {
+                        toa_ns -= 25.0;
+                    }
+                    // * --- timewalk correction ---
+                    double param0 = timewalk_param0_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    double param1 = timewalk_param1_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    double param2 = timewalk_param2_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    double param3 = timewalk_param3_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    double timewalk_correction_ns = param1 / std::pow(adc_peak_value_pede_sub - param2, param3);
+                    toa_ns -= timewalk_correction_ns;
+                    // * --- channel offset correction ---
+                    double channel_toa_offset = toa_offset_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    toa_ns -= channel_toa_offset;
+
                     h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
                     h2d_toa_adc_max_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(adc_peak_value_pede_sub, toa_ns);
                     h2d_toa_code_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_first_value, toa_ns);
-                    toa_code_matrix[channel + vldb_id * FPGA_CHANNEL_NUMBER].push_back(toa_first_value);
-                    toa_ns_matrix[channel + vldb_id * FPGA_CHANNEL_NUMBER].push_back(toa_ns);
+                    if (toa_ns > 0.0) {
+                        toa_weighted_sum += toa_ns * adc_peak_value_pede_sub;
+                        toa_weight_total += adc_peak_value_pede_sub;
+                    }
+                    if (entry < event_display_number) {
+                        event_display_adc_hitmap[entry]->Fill(uni_col + 0.5, uni_row + 0.5, adc_peak_value_pede_sub);
+                        if (toa_ns > 0.0)
+                            event_display_toa_hitmap[entry]->Fill(uni_col + 0.5, uni_row + 0.5, toa_ns);
+                    }
                 }
-                // } else if (toa_showup_times > 1) {
-                //     num_multi_ToA++;
-                    // multiple ToA hits
-                    // currently, just take the first one
-                    // double toa_ns = decode_toa_value_ns(toa_first_value);
-                    // toa_ns += 25.0 * static_cast<double>(toa_first_index);
-                    // h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
-                // }
             } // end of channel loop
         } // end of vldb loop
+        if (toa_weight_total > 0.0) {
+            double event_average_toa = toa_weighted_sum / toa_weight_total;
+            h1d_event_average_toa->Fill(event_average_toa);
+        }
     } // end of event loop
 
     input_root->Close();
@@ -335,8 +576,6 @@ int main(int argc, char **argv) {
     std::string annotation_canvas_title = CANVAS_TITLE;
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
     const std::string out_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + ".pdf";
-    const int NX = 16, NY = 12;
-    const int board_cols = 8, board_rows = 4;
 
     auto chan2pad = build_chan2pad_LUT(
         vldb_number, FPGA_CHANNEL_NUMBER,
@@ -377,169 +616,6 @@ int main(int argc, char **argv) {
     canvas_toa_frequency->Write();
     canvas_toa_frequency->Close();
 
-        // ! do the bx slip searching for each channel
-    UInt_t max_bx_slip_threshold = 1024;
-    UInt_t min_bx_slip_threshold = 0;
-    UInt_t bx_slip_step = 1;
-    std::vector<double> bx_slip_values;
-    std::vector<std::vector<double>> smooth_level_matrix(FPGA_CHANNEL_NUMBER * vldb_number, std::vector<double>());
-    for (UInt_t slip = min_bx_slip_threshold; slip <= max_bx_slip_threshold; slip += bx_slip_step) {
-        bx_slip_values.push_back(static_cast<double>(slip));
-        for (int ch = 0; ch < FPGA_CHANNEL_NUMBER * vldb_number; ch++) {
-            std::vector<UInt_t> & toa_codes = toa_code_matrix[ch];
-            std::vector<double> & toa_ns_values = toa_ns_matrix[ch];
-            // if the sample size is less than 100, skip
-            if (toa_codes.size() < 100) {
-                smooth_level_matrix[ch].push_back(std::numeric_limits<double>::quiet_NaN());
-                continue;
-            }
-            // make the th1d with the current slip value
-            TH1D h1d_toa_code_corr_slip("h1d_toa_code_corr_slip", "h1d_toa_code_corr_slip;Corrected ToA (ns);Counts", 256, 0, 25.0*static_cast<double>(machine_gun_samples));
-            for (size_t i = 0; i < toa_codes.size(); i++) {
-                UInt_t toa_code = toa_codes[i];
-                double toa_ns = toa_ns_values[i];
-                // apply slip
-                if (toa_code >= slip) {
-                    toa_ns -= 25.0;
-                }
-                h1d_toa_code_corr_slip.Fill(toa_ns);
-            }
-            auto smooth_level = FastSmoothMetrics(&h1d_toa_code_corr_slip);
-            smooth_level_matrix[ch].push_back(smooth_level.chi2_adj);
-        }
-    }
-    // draw the TGraphs
-    TCanvas *canvas_bx_slip = new TCanvas("canvas_bx_slip", "Bx Slip Scan", 1200, 800);
-    canvas_bx_slip->cd();
-    std::vector<TGraph*> tg_bx_slip_list;
-    std::vector<TH1D*> h1d_half_optimal_bx_slip_list;
-    std::vector<std::pair<int, double>> optimal_bx_slip_values;
-    optimal_bx_slip_values.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
-    for (int half = 0; half < 8; half++) {
-        TH1D *h1d_half_optimal_bx_slip = new TH1D(("h1d_half_optimal_bx_slip_half" + std::to_string(half)).c_str(),
-                                                  ("h1d_half_optimal_bx_slip_half" + std::to_string(half) + ";Optimal Bx Slip Value;Counts").c_str(),
-                                                  256, 0, 1024);
-        h1d_half_optimal_bx_slip->SetDirectory(nullptr);
-        h1d_half_optimal_bx_slip_list.push_back(h1d_half_optimal_bx_slip);
-    }
-    std::vector<Color_t> half_colors = {kRed, kBlue, kGreen+2, kMagenta, kCyan+2, kOrange+7, kViolet, kPink+9};
-    for (int ch = 0; ch < FPGA_CHANNEL_NUMBER * vldb_number; ch++) {
-        int channel_in_vldb = ch % FPGA_CHANNEL_NUMBER;
-        int vldb_id = ch / FPGA_CHANNEL_NUMBER;
-        int asic_id = channel_in_vldb / 76;
-        int half_id = (channel_in_vldb % 76) / 38;
-        int global_half_index = vldb_id * 4 + asic_id * 2 + half_id;
-        TGraph *tg_bx_slip = new TGraph();
-        tg_bx_slip->SetName(("tg_bx_slip_ch" + std::to_string(ch)).c_str());
-        tg_bx_slip->SetTitle(("bx slip scan ch" + std::to_string(ch) + ";Bx Slip Threshold;Smooth Level (TV Norm)").c_str());
-        tg_bx_slip->SetMarkerStyle(20);
-        tg_bx_slip->SetMarkerSize(0.5);
-        tg_bx_slip->SetMarkerColor(half_colors[global_half_index % half_colors.size()]);
-        // if the toa_codes size is less than 100, make dummy graph
-        if (toa_code_matrix[ch].size() < 100) {
-            for (size_t i = 0; i < bx_slip_values.size(); i++) {
-                double slip_value = bx_slip_values[i];
-                tg_bx_slip->SetPoint(static_cast<int>(i), slip_value, std::numeric_limits<double>::quiet_NaN());
-            }
-            tg_bx_slip_list.push_back(tg_bx_slip);
-            continue;
-        }
-        for (size_t i = 0; i < bx_slip_values.size(); i++) {
-            double slip_value = bx_slip_values[i];
-            double smooth_level = smooth_level_matrix[ch][i];
-            tg_bx_slip->SetPoint(static_cast<int>(i), slip_value, smooth_level);
-        }
-        // find the minimal point
-        double min_smooth_level = std::numeric_limits<double>::max();
-        double optimal_bx_slip = 0.0;
-        for (size_t i = 0; i < bx_slip_values.size(); i++) {
-            double smooth_level = smooth_level_matrix[ch][i];
-            if (smooth_level < min_smooth_level) {
-                min_smooth_level = smooth_level;
-                optimal_bx_slip = bx_slip_values[i];
-            }
-        }
-        
-        spdlog::info("Channel {} (VLDB {}, ASIC {}, Half {}) optimal bx slip: {}, smooth level: {}", ch, vldb_id, asic_id, half_id, optimal_bx_slip, min_smooth_level);
-        if (global_half_index >= 0 && global_half_index < static_cast<int>(h1d_half_optimal_bx_slip_list.size())) {
-            h1d_half_optimal_bx_slip_list[global_half_index]->Fill(optimal_bx_slip);
-        } else {
-            spdlog::warn("Computed global_half_index {} out of range for channel {}", global_half_index, ch);
-        }
-        tg_bx_slip_list.push_back(tg_bx_slip);
-        optimal_bx_slip_values.emplace_back(ch, optimal_bx_slip);
-    }
-
-    // if the channel is not in the mapping, set the optimal bx slip to average of the half
-    // create a directory to save the TParameters
-    output_root->mkdir("Optimal_Bx_Slip_Parameters")->cd();
-    std::vector<double> half_optimal_averages;
-    for (size_t half = 0; half < 2*vldb_number*2; half++) {
-        half_optimal_averages.push_back(h1d_half_optimal_bx_slip_list[half]->GetMean());
-    }
-    for (int ch = 0; ch < FPGA_CHANNEL_NUMBER * vldb_number; ch++) {
-        int channel_in_vldb = ch % FPGA_CHANNEL_NUMBER;
-        int vldb_id = ch / FPGA_CHANNEL_NUMBER;
-        int asic_id = channel_in_vldb / 76;
-        int half_id = (channel_in_vldb % 76) / 38;
-        int global_half_index = vldb_id * 4 + asic_id * 2 + half_id;
-        // check if the channel is in optimal_bx_slip_values
-        auto it = std::find_if(optimal_bx_slip_values.begin(), optimal_bx_slip_values.end(),
-                               [ch](const std::pair<int, double>& p) { return p.first == ch; });
-        if (it == optimal_bx_slip_values.end()) {
-            double average_bx_slip = half_optimal_averages[global_half_index];
-            spdlog::info("Channel {} (VLDB {}, ASIC {}, Half {}) not in mapping, set optimal bx slip to half average: {}", ch, vldb_id, asic_id, half_id, average_bx_slip);
-            optimal_bx_slip_values.emplace_back(ch, average_bx_slip);
-        }
-        // write to output file as TParameter
-        double optimal_bx_slip = 0.0;
-        for (const auto& p : optimal_bx_slip_values) {
-            if (p.first == ch) {
-                optimal_bx_slip = p.second;
-                break;
-            }
-        }
-        TParameter<double> param_optimal_bx_slip(("optimal_bx_slip_ch" + std::to_string(ch)).c_str(), optimal_bx_slip);
-        param_optimal_bx_slip.Write();
-    }
-    output_root->cd();
-    draw_mosaic_fixed(*canvas_bx_slip, tg_bx_slip_list, topo_ped_median);
-    canvas_bx_slip->Modified();
-    canvas_bx_slip->Update();
-    canvas_bx_slip->Print(out_pdf.c_str());
-    canvas_bx_slip->Write();
-    canvas_bx_slip->Close();
-
-    TCanvas *canvas_half_optimal_bx_slip = new TCanvas("canvas_half_optimal_bx_slip", "Half Optimal Bx Slip", 1200, 800);
-    // draw the half optimal bx slip histograms
-
-    TLegend *legend_half_optimal_bx_slip = new TLegend(0.7, 0.7, 0.89, 0.89);
-    legend_half_optimal_bx_slip->SetFillStyle(0);
-    legend_half_optimal_bx_slip->SetBorderSize(0);
-    for (int half = 0; half < 8; half++) {
-        TH1D *h1d_half_optimal_bx_slip = h1d_half_optimal_bx_slip_list[half];
-        h1d_half_optimal_bx_slip->SetTitle("");
-        h1d_half_optimal_bx_slip->SetStats(0);
-        h1d_half_optimal_bx_slip->SetLineColor(half_colors[half]);
-        h1d_half_optimal_bx_slip->SetLineWidth(2);
-        h1d_half_optimal_bx_slip->Draw("HIST SAME");
-        legend_half_optimal_bx_slip->AddEntry(h1d_half_optimal_bx_slip, ("Half " + std::to_string(half)).c_str(), "l");
-        // find the peak position
-        int max_bin = h1d_half_optimal_bx_slip->GetMaximumBin();
-        double peak_bx_slip = h1d_half_optimal_bx_slip->GetBinCenter(max_bin);
-        double peak_counts = h1d_half_optimal_bx_slip->GetBinContent(max_bin);
-        spdlog::info("Half {} optimal bx slip peak: {}, counts: {}", half, peak_bx_slip, peak_counts);
-        TParameter<double> param_peak_bx_slip(("peak_bx_slip_half" + std::to_string(half)).c_str(), peak_bx_slip);
-        param_peak_bx_slip.Write();
-    }
-    legend_half_optimal_bx_slip->Draw();
-    canvas_half_optimal_bx_slip->Modified();
-    canvas_half_optimal_bx_slip->Update();
-    canvas_half_optimal_bx_slip->Print(out_pdf.c_str());
-    canvas_half_optimal_bx_slip->Write();
-    canvas_half_optimal_bx_slip->Close();
-    
-
     TCanvas *canvas_raw_toa_ns = new TCanvas("canvas_raw_toa_ns", "Raw ToA in ns", 1200, 800);
     draw_mosaic_fixed(*canvas_raw_toa_ns, h1d_raw_toa_ns_list, topo_ped_median);
     canvas_raw_toa_ns->Modified();
@@ -556,14 +632,22 @@ int main(int argc, char **argv) {
     canvas_toa_adc_max_corr->Write();
     canvas_toa_adc_max_corr->Close();
 
+    // print the example channel
     TCanvas *canvas_toa_adc_max_corr_example = new TCanvas("canvas_toa_adc_max_corr_example", "ToA ADC Max Correction Example Channel", 800, 600);
     auto h2d_example = h2d_toa_adc_max_corr_list[chn_example];
     h2d_example->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
-    h2d_example->GetYaxis()->SetTitle("Raw ToA [ns]");
+    h2d_example->GetYaxis()->SetTitle("Corrected ToA [ns]");
     format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
     canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
     canvas_toa_adc_max_corr_example->Write();
     canvas_toa_adc_max_corr_example->Close();
+
+    TCanvas *canvas_event_toa_average = new TCanvas("canvas_event_toa_average", "Event Average ToA", 800, 600);
+    canvas_event_toa_average->cd();
+    format_1d_hist_canvas(canvas_event_toa_average, h1d_event_average_toa, kBlue, annotation_canvas_title, annotation_testbeam_title, "Event Average ToA");
+    canvas_event_toa_average->Print(out_pdf.c_str());
+    canvas_event_toa_average->Write();
+    canvas_event_toa_average->Close();
 
     TCanvas *canvas_toa_code_corr = new TCanvas("canvas_toa_code_corr", "ToA Code Correction", 1200, 800);
     draw_mosaic_fixed(*canvas_toa_code_corr, h2d_toa_code_corr_list, topo_wave);
@@ -573,10 +657,38 @@ int main(int argc, char **argv) {
     canvas_toa_code_corr->Write();
     canvas_toa_code_corr->Close();
 
+    for (int ev=0; ev<event_display_number; ev++) {
+        TCanvas *canvas_event_adc = new TCanvas(("canvas_event_" + std::to_string(ev) + "_adc").c_str(),
+                                                ("Event " + std::to_string(ev) + " ADC Hitmap").c_str(),
+                                                800, 600);
+        auto h2d_adc = event_display_adc_hitmap[ev];
+        
+        h2d_adc->GetXaxis()->SetTitle("X");
+        h2d_adc->GetYaxis()->SetTitle("Y");
+        format_2d_hist_canvas(canvas_event_adc, h2d_adc, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Event_" + std::to_string(ev), false);
+        canvas_event_adc->Print(out_pdf.c_str());
+        canvas_event_adc->Write();
+        canvas_event_adc->Close();
+
+        TCanvas *canvas_event_toa = new TCanvas(("canvas_event_" + std::to_string(ev) + "_toa").c_str(),
+                                                ("Event " + std::to_string(ev) + " ToA Hitmap").c_str(),
+                                                800, 600);
+        auto h2d_toa = event_display_toa_hitmap[ev];
+        h2d_toa->GetXaxis()->SetTitle("X");
+        h2d_toa->GetYaxis()->SetTitle("Y");
+        format_2d_hist_canvas(canvas_event_toa, h2d_toa, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Event_" + std::to_string(ev), false);
+        canvas_event_toa->Print(out_pdf.c_str());
+        canvas_event_toa->Write();
+        canvas_event_toa->Close();
+
+        delete canvas_event_adc;
+        delete canvas_event_toa;
+    }
+
     // draw dummy page to close the pdf
     TCanvas *canvas_dummy = new TCanvas("canvas_dummy", "Dummy Canvas", 800, 600);
     canvas_dummy->Print((out_pdf + "]").c_str());
-
+    
     output_root->Close();
 
     delete canvas_toa_frequency;
@@ -584,8 +696,6 @@ int main(int argc, char **argv) {
     delete canvas_toa_adc_max_corr;
     delete canvas_toa_code_corr;
     delete canvas_toa_adc_max_corr_example;
-    delete canvas_bx_slip;
-    delete canvas_half_optimal_bx_slip;
     delete canvas_dummy;
 
     spdlog::info("Output file {} has been saved.", script_output_file);

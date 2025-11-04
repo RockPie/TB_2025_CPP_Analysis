@@ -54,6 +54,9 @@ FINAL_PEDESTAL_TARGETS = [f"{DUMP_DIR}/303_Pedestal/{p['dtype']}/{p['run']}.root
 FINAL_RAWADC_TARGETS = [f"{DUMP_DIR}/304_RawADC/{p['dtype']}/{p['run']}.root" for p in pairs]
 
 FINAL_TOA_CORRECTION_TARGETS = [f"{DUMP_DIR}/306_ToA_Correction/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOA_TIMEWALK_TARGETS = [f"{DUMP_DIR}/307_ToA_Timewalk/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOA_ANALYSIS_TARGETS = [f"{DUMP_DIR}/308_ToA_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOA_DNL_TARGETS = [f"{DUMP_DIR}/309_ToA_DNL/{p['dtype']}/{p['run']}.root" for p in pairs]
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -70,7 +73,10 @@ rule all:
         FINAL_PEDESTAL_TARGETS,
         FINAL_RAWADC_TARGETS,
         ALL_305_OUTPUTS,
-        FINAL_TOA_CORRECTION_TARGETS
+        FINAL_TOA_CORRECTION_TARGETS,
+        FINAL_TOA_TIMEWALK_TARGETS,
+        FINAL_TOA_ANALYSIS_TARGETS,
+        FINAL_TOA_DNL_TARGETS
 
 # =========================
 # Build system integration
@@ -412,4 +418,82 @@ rule ToA_Correction:
         mkdir -p {DUMP_DIR}/306_ToA_Correction/{wildcards.dtype}
         mkdir -p {LOG_DIR}/306_ToA_Correction/{wildcards.dtype}
         {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 307: ToA_Timewalk
+rule ToA_Timewalk:
+    input:
+        exe     = f"{BIN_DIR}/307_ToA_Timewalk",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/307_ToA_Timewalk/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/307_ToA_Timewalk/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 308: ToA_Analysis
+rule ToA_Analysis:
+    input:
+        exe     = f"{BIN_DIR}/308_ToA_Analysis",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root",
+        offset_in = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root"
+        # timewalk_in = "dump/307_ToA_Timewalk/beamtests/Run0452.root"
+    output:
+        root_out = f"{DUMP_DIR}/308_ToA_Analysis/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/308_ToA_Analysis/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/308_ToA_Analysis
+        mkdir -p {LOG_DIR}/308_ToA_Analysis
+        mkdir -p {DUMP_DIR}/308_ToA_Analysis/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/308_ToA_Analysis/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_in} -d {input.dnl_in} -O {input.offset_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 309: ToA_DNL
+rule ToA_DNL:
+    input:
+        exe     = f"{BIN_DIR}/309_ToA_DNL",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+    output:
+        root_out = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/309_ToA_DNL/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/309_ToA_DNL/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 310: ToA_Offset
+rule ToA_Offset:
+    input:
+        exe     = f"{BIN_DIR}/310_ToA_Offset",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/310_ToA_Offset
+        mkdir -p {LOG_DIR}/310_ToA_Offset
+        mkdir -p {DUMP_DIR}/310_ToA_Offset/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/310_ToA_Offset/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
         """
