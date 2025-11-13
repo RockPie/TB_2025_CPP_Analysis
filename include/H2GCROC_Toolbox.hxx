@@ -5,6 +5,92 @@
 #include "H2GCROC_ADC_Analysis.hxx"
 #include <Eigen/Sparse>
 
+std::vector<std::pair<int,int>> map_channels(
+    int vldb_number,
+    int fpga_channel_number,
+    int nx, int ny,
+    int board_cols, int board_rows,
+    const json& sipm_board,
+    const json& board_loc,
+    const json& board_rotation,
+    const json& board_flip,
+    std::vector<int>& ch2pid,
+    std::vector<int>& pid2ch
+){
+    std::vector<std::pair<int,int>> dup_list;
+    
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < fpga_channel_number; channel++) {
+            int channel_index_in_h2g = channel % 76;
+            int channel_index_in_h2g_half = channel_index_in_h2g % 38;
+            int asic_id = channel / 76;
+            int half_id = channel_index_in_h2g / 38;
+
+            if (channel_index_in_h2g_half == 19)
+                continue;
+            if (channel_index_in_h2g_half == 0)
+                continue;
+
+            int channel_index_no_CM_Calib = channel_index_in_h2g_half;
+            
+            if (channel_index_in_h2g_half > 19)
+                channel_index_no_CM_Calib -= 2;
+            else if (channel_index_in_h2g_half > 0)
+                channel_index_no_CM_Calib -= 1;
+
+            std::string chn_key = std::to_string(channel_index_no_CM_Calib);
+            int col = -1, row = -1;
+            if (sipm_board.contains(chn_key)) {
+                col = sipm_board.at(chn_key).at("col").get<int>();
+                row = sipm_board.at(chn_key).at("row").get<int>();
+            } else {
+                spdlog::warn("VLDB {} Channel {} → SiPM Board Key {} not found in mapping!",
+                            vldb_id, channel, chn_key);
+                continue;
+            }
+
+            std::string board_key = std::to_string(half_id + asic_id * 2 + vldb_id * 4);
+            int board_col = -1, board_row = -1;
+            int board_rotated = 0;
+            int board_flipped = 0;
+            if (board_loc.contains(board_key)) {
+                board_col = board_loc.at(board_key).at("col").get<int>();
+                board_row = board_loc.at(board_key).at("row").get<int>();
+            }
+            if (board_rotation.contains(board_key)) {
+                board_rotated = board_rotation.at(board_key).get<int>();
+            }
+            if (board_flip.contains(board_key)) {
+                board_flipped = board_flip.at(board_key).get<int>();
+            }
+
+            int uni_col = -1, uni_row = -1;
+            if (board_rotated == 0) {
+                uni_col = board_col * board_cols + col;
+                uni_row = board_row * board_rows + row;
+            } else {
+                uni_col = board_col * board_cols + (board_cols - 1 - col);
+                uni_row = board_row * board_rows + (board_rows - 1 - row);
+            }
+
+            if (uni_col < 0 || uni_col >= nx || uni_row < 0 || uni_row >= ny)
+                continue;
+
+            const int pid = uni_row*nx + uni_col;
+            const int gch = channel + vldb_id*fpga_channel_number;
+
+            if (pid2ch[pid] != -1 && pid2ch[pid] != gch) {
+                dup_list.emplace_back(pid, gch);
+            }
+
+            ch2pid[gch] = pid;
+            if (pid2ch[pid] == -1) pid2ch[pid] = gch;
+        }
+    }
+    
+    return dup_list;
+};
+
 inline double crystallball_left(double *x, double *par) {
     // par[0] = A
     // par[1] = a
@@ -602,6 +688,37 @@ inline void diff_toa_offset_calculator_2(
     }
 }
 
+// find the largest ADC values, and then the average of minimum ToAs among them
+inline double find_leading_toa(const std::vector<double>& toa_list, const std::vector<double>& adc_list, int n_max_adc=4, int n_min_toa=2){
+    struct Hit { double t; double A; };
+    std::vector<Hit> hits;
+    const int N = (int)toa_list.size();
+    for (int i=0;i<N;++i){
+        double t = toa_list[i];
+        double A = adc_list[i];
+        if (std::isfinite(t) && std::isfinite(A)){
+            hits.push_back({t,A});
+        }
+    }
+    if (hits.size() == 0) return std::numeric_limits<double>::quiet_NaN();
+
+    // find top n_max_adc by ADC
+    const int K = std::min(n_max_adc, (int)hits.size());
+    std::nth_element(hits.begin(), hits.begin()+K-1, hits.end(),
+                     [](const Hit& a, const Hit& b){ return a.A > b.A; });
+
+    // among those, find top n_min_toa by ToA
+    std::vector<Hit> hits2(hits.begin(), hits.begin()+K);
+    const int M = std::min(n_min_toa, (int)hits2.size());
+    std::nth_element(hits2.begin(), hits2.begin()+M-1, hits2.end(),
+                     [](const Hit& a, const Hit& b){ return a.t < b.t; });
+
+    // average the M earliest ToAs
+    double tsum = 0.0;
+    for (int i=0;i<M;++i) tsum += hits2[i].t;
+    return tsum / static_cast<double>(M);
+}
+
 inline double decode_toa_value_ns_with_dnl(UInt_t val2, std::vector<double>& coarse_dnl_lookup, std::vector<double>& fine_dnl_lookup) {
     constexpr double scale0 = 0.025;
     constexpr double scale1 = 0.2;
@@ -614,6 +731,87 @@ inline double decode_toa_value_ns_with_dnl(UInt_t val2, std::vector<double>& coa
     return scale0 * fine_dnl_lookup[part0] * 8.0 +
            scale1 * coarse_dnl_lookup[part1] * 32.0 +
            scale2 * static_cast<double>(part2);
+}
+
+inline void crystalball_fit_th1d(TCanvas& canvas, TH1D& hist, std::vector<double>& fit_range_sigma, std::vector<double>& fit_range_offset, int color, double& mean_avg, double& mean_err_sys, double& mean_err_stat, double& sigma_avg, double& sigma_err_sys, double& sigma_err_stat, double& resolution, double& resolution_err) {
+    const double mean = hist.GetMean();
+    const double sigma = hist.GetRMS();
+    const double amp = hist.GetMaximum();
+
+    // * --- Pre fit round 1 ---
+    double pre_fit_1_min = mean - 2.0 * sigma;
+    double pre_fit_1_max = mean + 3.0 * sigma;
+    if (pre_fit_1_min < 0) pre_fit_1_min = 0.0;
+    TF1* pre_fit_1 = new TF1("gaus_fit_pre", "gaus", pre_fit_1_min, pre_fit_1_max);
+    pre_fit_1->SetParameters(amp, mean, sigma);
+    hist.Fit(pre_fit_1, "QNR");
+    const double pf1_amp = pre_fit_1->GetParameter(0);
+    const double pf1_mean = pre_fit_1->GetParameter(1);
+    const double pf1_sigma = pre_fit_1->GetParameter(2);
+    delete pre_fit_1;
+
+    // * --- Pre fit round 2 ---
+    double pre_fit_2_min = pf1_mean - 1.5 * pf1_sigma;
+    double pre_fit_2_max = pf1_mean + 2.5 * pf1_sigma;
+    if (pre_fit_2_min < 0) pre_fit_2_min = 0.0;
+    TF1* pre_fit_2 = new TF1("gaus_fit_pre2", "gaus", pre_fit_2_min, pre_fit_2_max);
+    pre_fit_2->SetParameters(pf1_amp, pf1_mean, pf1_sigma);
+    hist.Fit(pre_fit_2, "QNR");
+    const double pf2_amp = pre_fit_2->GetParameter(0);
+    const double pf2_mean = pre_fit_2->GetParameter(1);
+    const double pf2_sigma = pre_fit_2->GetParameter(2);
+    delete pre_fit_2;
+
+    // * --- Crystal Ball Fit ---
+    std::vector<double> fit_param_0_list;
+    std::vector<double> fit_param_1_list;
+    std::vector<double> fit_param_2_list;
+    std::vector<double> fit_param_3_list;
+    std::vector<double> fit_param_4_list;
+    std::vector<double> fit_param_0_err_list;
+    std::vector<double> fit_param_1_err_list;
+    std::vector<double> fit_param_2_err_list;
+    std::vector<double> fit_param_3_err_list;
+    std::vector<double> fit_param_4_err_list;
+    for (const auto& offset : fit_range_offset) {
+        for (const auto& scale : fit_range_sigma) {
+            double cb_fit_min = pf2_mean - scale * pf2_sigma + offset;
+            double cb_fit_max = pf2_mean + scale * pf2_sigma + offset;
+            if (cb_fit_min < 0) cb_fit_min = 0.0;
+            TF1* cb_fit = new TF1("crystal_ball_fit", crystallball_left, cb_fit_min, cb_fit_max, 5);
+            cb_fit->SetParameters(pf2_amp, 1.5, 5.0, pf2_mean, pf2_sigma);
+            hist.Fit(cb_fit, "QNR+");
+            canvas.cd();
+            cb_fit->SetLineColorAlpha(color, 0.2);
+            cb_fit->Draw("same");
+            fit_param_0_list.push_back(cb_fit->GetParameter(0));
+            fit_param_1_list.push_back(cb_fit->GetParameter(1));
+            fit_param_2_list.push_back(cb_fit->GetParameter(2));
+            fit_param_3_list.push_back(cb_fit->GetParameter(3));
+            fit_param_4_list.push_back(cb_fit->GetParameter(4));
+            fit_param_0_err_list.push_back(cb_fit->GetParError(0));
+            fit_param_1_err_list.push_back(cb_fit->GetParError(1));
+            fit_param_2_err_list.push_back(cb_fit->GetParError(2));
+            fit_param_3_err_list.push_back(cb_fit->GetParError(3));
+            fit_param_4_err_list.push_back(cb_fit->GetParError(4));
+        }
+    }
+    mean_sigma_list_calculator(
+        fit_param_3_list,
+        fit_param_3_err_list,
+        fit_param_4_list,
+        fit_param_4_err_list,
+        mean_avg,
+        mean_err_sys,
+        mean_err_stat,
+        sigma_avg,
+        sigma_err_sys,
+        sigma_err_stat
+    );
+    resolution = sigma_avg / mean_avg * 100.0;
+    double mean_err = std::sqrt(mean_err_sys * mean_err_sys + mean_err_stat * mean_err_stat);
+    double sigma_err = std::sqrt(sigma_err_sys * sigma_err_sys + sigma_err_stat * sigma_err_stat);
+    resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
 }
 
 #endif

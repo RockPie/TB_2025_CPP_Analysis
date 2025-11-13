@@ -4,6 +4,8 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "H2GCROC_TimewalkLUT.hxx"
+#include "H2GCROC_ToA_Align.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -25,7 +27,6 @@ int main(int argc, char **argv) {
         ("c,correction", "Input ToA correction .root file", cxxopts::value<std::string>())
         ("d,dnl", "Input DNL .root file", cxxopts::value<std::string>())
         ("t,timewalk", "Input Timewalk correction .root file", cxxopts::value<std::string>())
-        ("O,offset", "Input ToA offset .root file", cxxopts::value<std::string>())
         ("o,output", "Output .root file", cxxopts::value<std::string>())
         ("e,events", "Number of events to process", cxxopts::value<int>()->default_value("-1"))
         ("v,verbose", "Verbose mode", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
@@ -114,6 +115,28 @@ int main(int argc, char **argv) {
     int machine_gun_samples = 16;
     int vldb_number = 2;
     int chn_example = 299; // print this channel seprately
+    const double channel_toa_min_ns = 0.0;
+    const double channel_toa_max_ns = 300.0;
+    const double event_toa_min_ns = 0.0;
+    const double event_toa_max_ns = 300.0;
+
+    // const double channel_toa_min_ns = -200.0;
+    // const double channel_toa_max_ns = 200.0;
+    // const double event_toa_min_ns = -120.0;
+    // const double event_toa_max_ns = 120.0;
+
+    AlignConfig cfg;
+    cfg.NCH         = 76*3;
+    cfg.DT_MIN      = -50.0;
+    cfg.DT_MAX      = +50.0;
+    cfg.DT_NBINS    = 800;
+    cfg.MIN_ENTRIES = 80;
+    cfg.Tbc_ns      = 0.0; 
+
+    cfg.out_root    = nullptr;
+
+    ToAAligner aligner(cfg);
+
 
     TFile *input_correction_root = new TFile(parsed["correction"].as<std::string>().c_str(), "READ");
     if (input_correction_root->IsZombie()) {
@@ -159,27 +182,23 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    input_timewalk_root->cd("Optimal_ToA_ADC_Max_Correction_Parameters");
-    param_dir = gDirectory;
-    std::map<int, double> timewalk_param0_map;
-    std::map<int, double> timewalk_param1_map;
-    std::map<int, double> timewalk_param2_map;
-    std::map<int, double> timewalk_param3_map;
+    input_timewalk_root->cd("Timewalk_LUTs");
+    std::map<int, TGraph*> timewalk_lut_map;
     for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
-        std::string param_name0 = "toa_adc_max_corr_parm0_ch" + std::to_string(chn);
-        std::string param_name1 = "toa_adc_max_corr_parm1_ch" + std::to_string(chn);
-        std::string param_name2 = "toa_adc_max_corr_parm2_ch" + std::to_string(chn);
-        std::string param_name3 = "toa_adc_max_corr_parm3_ch" + std::to_string(chn);
-        double parm0 = getParam(param_dir, param_name0.c_str());
-        double parm1 = getParam(param_dir, param_name1.c_str());
-        double parm2 = getParam(param_dir, param_name2.c_str());
-        double parm3 = getParam(param_dir, param_name3.c_str());
-        timewalk_param0_map[chn] = parm0;
-        timewalk_param1_map[chn] = parm1;
-        timewalk_param2_map[chn] = parm2;
-        timewalk_param3_map[chn] = parm3;
-        spdlog::info("Channel {}: ToA ADC Max Correction Parameters = {}, {}, {}, {}",
-                     chn, parm0, parm1, parm2, parm3);
+        std::string lut_name = "timewalk_lut_ch" + std::to_string(chn);
+        TGraph* lut = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        lut = gDirectory->Get<TGraph>(lut_name.c_str());
+    #else
+        gDirectory->GetObject(lut_name.c_str(), lut);
+    #endif
+        if (!lut) {
+            spdlog::error("Missing TGraph key '{}' in directory '{}'",
+                        lut_name, gDirectory->GetPath());
+            return 1;
+        }
+        timewalk_lut_map[chn] = lut;
+        spdlog::info("Channel {}: Timewalk LUT with {} points loaded", chn, lut->GetN());
     }
     input_timewalk_root->Close();
 
@@ -229,22 +248,6 @@ int main(int argc, char **argv) {
         dnl_fine_tdc_list[chn] = std::move(fine_dnl);
     }
     input_dnl_root->Close();
-
-    TFile *input_offset_root = new TFile(parsed["offset"].as<std::string>().c_str(), "READ");
-    if (input_offset_root->IsZombie()) {
-        spdlog::error("Failed to open input offset file {}", parsed["offset"].as<std::string>());
-        return 1;
-    }
-
-    input_offset_root->cd("ToA_Offsets");
-    std::map<int, double> toa_offset_map;
-    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
-        std::string param_name = "toa_offset_ch" + std::to_string(chn);
-        double offset_value = getParam(gDirectory, param_name.c_str());
-        toa_offset_map[chn] = offset_value;
-        spdlog::info("Channel {}: ToA offset = {}", chn, offset_value);
-    }
-    input_offset_root->Close();
 
     TFile *input_root = new TFile(script_input_file.c_str(), "READ");
     if (input_root->IsZombie()) {
@@ -298,6 +301,7 @@ int main(int argc, char **argv) {
         auto *branch_val2_list  = new UInt_t[FPGA_CHANNEL_NUMBER * machine_gun_samples];
         auto *branch_crc32_list = new UInt_t[4 * machine_gun_samples];
         auto *branch_last_heartbeat = new UInt_t[machine_gun_samples];
+
         input_tree->SetBranchAddress(("timestamps_"    + std::to_string(vldb_id)).c_str(), branch_timestamps);
         input_tree->SetBranchAddress(("daqh_list_"     + std::to_string(vldb_id)).c_str(), branch_daqh_list);
         input_tree->SetBranchAddress(("tc_list_"       + std::to_string(vldb_id)).c_str(), branch_tc_list);
@@ -307,6 +311,7 @@ int main(int argc, char **argv) {
         input_tree->SetBranchAddress(("val2_list_"     + std::to_string(vldb_id)).c_str(), branch_val2_list);
         input_tree->SetBranchAddress(("crc32_list_"    + std::to_string(vldb_id)).c_str(), branch_crc32_list);
         input_tree->SetBranchAddress(("last_heartbeat_"+ std::to_string(vldb_id)).c_str(), branch_last_heartbeat);
+
         timestamp_pools_original[vldb_id].push_back(branch_timestamps);
         daqh_list_pools[vldb_id].push_back(branch_daqh_list);
         tc_list_pools[vldb_id].push_back(branch_tc_list);
@@ -328,7 +333,7 @@ int main(int argc, char **argv) {
     std::vector<TH1D*> h1d_raw_toa_ns_list;
     for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
         std::string hist_name = "h1d_raw_toa_ns_ch" + std::to_string(i);
-        TH1D *h1d_raw_toa_ns = new TH1D(hist_name.c_str(), (hist_name + ";ToA (ns);Counts").c_str(), 256, 0, 25.0*static_cast<double>(machine_gun_samples));
+        TH1D *h1d_raw_toa_ns = new TH1D(hist_name.c_str(), (hist_name + ";ToA (ns);Counts").c_str(), 256, channel_toa_min_ns, channel_toa_max_ns);
         h1d_raw_toa_ns->SetDirectory(nullptr);
         h1d_raw_toa_ns_list.push_back(h1d_raw_toa_ns);
     }
@@ -339,7 +344,7 @@ int main(int argc, char **argv) {
         std::string hist_name = "h2d_toa_adc_max_corr_ch" + std::to_string(i);
         TH2D *h2d_toa_adc_max_corr = new TH2D(hist_name.c_str(), (hist_name + ";Corrected ToA (ns);ADC Peak Value (pedestal subtracted)").c_str(),
                                              256, 0, 1024,
-                                             256, 0, 25.0*static_cast<double>(machine_gun_samples));
+                                             256, channel_toa_min_ns, channel_toa_max_ns);
         h2d_toa_adc_max_corr->SetDirectory(nullptr);
         h2d_toa_adc_max_corr_list.push_back(h2d_toa_adc_max_corr);
     }
@@ -350,9 +355,33 @@ int main(int argc, char **argv) {
         std::string hist_name = "h2d_toa_code_corr_ch" + std::to_string(i);
         TH2D *h2d_toa_code_corr = new TH2D(hist_name.c_str(), (hist_name + ";Corrected ToA (ns);ToA Code").c_str(),
                                            256, 0, 1024,
-                                           256, 0, 25.0*static_cast<double>(machine_gun_samples));
+                                           256, channel_toa_min_ns, channel_toa_max_ns);
         h2d_toa_code_corr->SetDirectory(nullptr);
         h2d_toa_code_corr_list.push_back(h2d_toa_code_corr);
+    }
+
+    // * --- Channel-wise waveform -------------------------------------------------
+    std::vector<TH2D*> h2d_channel_waveform_list;
+    for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
+        std::string hist_name = "h2d_channel_waveform_ch" + std::to_string(i);
+        TH2D *h2d_channel_waveform = new TH2D(hist_name.c_str(), (hist_name + ";Time Sample;ADC Value").c_str(),
+                                              machine_gun_samples*30, -5*machine_gun_samples, machine_gun_samples*25,
+                                              256, 0, 1024);
+        h2d_channel_waveform->SetDirectory(nullptr);
+        h2d_channel_waveform_list.push_back(h2d_channel_waveform);
+    }
+
+    // * --- Channel-seed channel ToA correlation histogram ------------------------------
+    std::vector<TH2D*> h2d_channel_seed_corr_list;
+    for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
+        std::string hist_name = "h2d_channel_seed_corr_ch" + std::to_string(i);
+        TH2D *h2d_channel_seed_corr = new TH2D(hist_name.c_str(), (hist_name + ";Channel ToA (ns);Seed Channel ToA (ns)").c_str(),
+                                               256, channel_toa_min_ns, channel_toa_max_ns,
+                                               256, channel_toa_min_ns, channel_toa_max_ns);
+        h2d_channel_seed_corr->SetDirectory(nullptr);
+        // fill one dummy entry to avoid empty histogram issue
+        h2d_channel_seed_corr->Fill(channel_toa_min_ns, channel_toa_min_ns);
+        h2d_channel_seed_corr_list.push_back(h2d_channel_seed_corr);
     }
 
     const int event_display_number = 10; // show the first 10 events for example
@@ -383,11 +412,8 @@ int main(int argc, char **argv) {
         event_display_toa_hitmap.push_back(toa_hitmap);
     }
 
-    // TH1D *h1d_event_average_toa = new TH1D("h1d_event_average_toa", "h1d_event_average_toa;Average ToA per Event (ns);Counts", 256, 0, 25.0*static_cast<double>(machine_gun_samples));
-    // h1d_event_average_toa->SetDirectory(nullptr);
-
-    const int adc_peak_min_index = 4;
-    const int adc_peak_max_index = 8;
+    const int adc_peak_min_index = 6;
+    const int adc_peak_max_index = 7;
 
     std::vector<double> event_adc_list;
     std::vector<double> event_adc_toa_on_list;
@@ -398,69 +424,33 @@ int main(int argc, char **argv) {
     event_leading_toa_list.reserve(entry_max);
     event_adc_weighted_toa_list.reserve(entry_max);
 
-    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-            int channel_index_in_h2g = channel % 76;
-                int channel_index_in_h2g_half = channel_index_in_h2g % 38;
-                int asic_id = channel / 76;
-                int half_id = channel_index_in_h2g / 38;
+    auto dup_list = map_channels(
+        vldb_number, FPGA_CHANNEL_NUMBER,
+        NX, NY, board_cols, board_rows,
+        sipm_board, board_loc, board_rotation, board_flip,
+        ch2pid, pid2ch
+    );
 
-                if (channel_index_in_h2g_half == 19)
-                    continue;
-                if (channel_index_in_h2g_half == 0)
-                    continue;
-
-                int channel_index_no_CM_Calib = channel_index_in_h2g_half;
-                
-                if (channel_index_in_h2g_half > 19)
-                    channel_index_no_CM_Calib -= 2;
-                else if (channel_index_in_h2g_half > 0)
-                    channel_index_no_CM_Calib -= 1;
-
-                std::string chn_key = std::to_string(channel_index_no_CM_Calib);
-                int col = -1, row = -1;
-                if (sipm_board.contains(chn_key)) {
-                    col = sipm_board.at(chn_key).at("col").get<int>();
-                    row = sipm_board.at(chn_key).at("row").get<int>();
-                }
-
-                std::string board_key = std::to_string(half_id + asic_id * 2 + vldb_id * 4);
-                int board_col = -1, board_row = -1;
-                // print board_key
-                // spdlog::info("Board Key: {} for VLDB {} Channel {}", board_key, vldb_id, channel);
-                int board_rotated = 0;
-                int board_flipped = 0;
-                if (board_loc.contains(board_key)) {
-                    board_col = board_loc.at(board_key).at("col").get<int>();
-                    board_row = board_loc.at(board_key).at("row").get<int>();
-                }
-                if (board_rotation.contains(board_key)) {
-                    board_rotated = board_rotation.at(board_key).get<int>();
-                }
-                if (board_flip.contains(board_key)) {
-                    board_flipped = board_flip.at(board_key).get<int>();
-                }
-
-                int uni_col = -1, uni_row = -1;
-                if (board_rotated == 0) {
-                    uni_col = board_col * board_cols + col;
-                    uni_row = board_row * board_rows + row;
-                } else {
-                    // rotate 180 degrees
-                    uni_col = board_col * board_cols + (board_cols - 1 - col);
-                    uni_row = board_row * board_rows + (board_rows - 1 - row);
-                }
-
-                if (uni_col < 0 || uni_col >= NX || uni_row < 0 || uni_row >= NY)
-                    continue;
-
-                const int pid = uni_row*NX + uni_col;
-                const int gch = channel + vldb_id*FPGA_CHANNEL_NUMBER;
-
-                ch2pid[gch] = pid;
-                if (pid2ch[pid] == -1) pid2ch[pid] = gch;
+    if (!dup_list.empty()) {
+        spdlog::error("Found {} duplicate locations.", dup_list.size());
+        for (auto [pid,gch] : dup_list) {
+            int r = pid / NX, c = pid % NX;
+            spdlog::error("  pid={} → uni({},{}) claimed by gch={} and gch={}",
+                        pid, c, r, pid2ch[pid], gch);
         }
     }
+
+    const int seed_channel = 74; // use seed channel to do two-channel toa correlation
+    int seed_channel_vldb_id = seed_channel / FPGA_CHANNEL_NUMBER;
+    int seed_channel_local = seed_channel % FPGA_CHANNEL_NUMBER;
+    int seed_channel_pid = ch2pid[seed_channel];
+    if (seed_channel_pid == -1) {
+        spdlog::error("Seed channel {} has no mapped pixel ID!", seed_channel);
+        return 1;
+    }
+    int seed_channel_col = seed_channel_pid % NX;
+    int seed_channel_row = seed_channel_pid / NX;
+    spdlog::info("Seed channel {} mapped to pixel ID {} at (col={}, row={})", seed_channel, seed_channel_pid, seed_channel_col, seed_channel_row);
 
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
@@ -468,10 +458,13 @@ int main(int argc, char **argv) {
         double adc_toa_on_sum = 0.0;
         double adc_weighted_toa_sum = 0.0;
         double adc_weight_sum = 0.0;
+        std::vector<std::pair<int,double>> hits; // for toa alignment
+        hits.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
         std::vector<double> toa_list_this_event;
         std::vector<double> adc_list_this_event;
         toa_list_this_event.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
         adc_list_this_event.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
+
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
@@ -487,6 +480,8 @@ int main(int argc, char **argv) {
                     continue;
 
                 std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
+                std::vector<UInt_t> adc_samples;
+                adc_samples.reserve(machine_gun_samples);
                 int adc_peak_index = -1;
                 UInt_t adc_peak_value = 0;
                 int adc_peak_ranged_index = -1;
@@ -507,6 +502,7 @@ int main(int argc, char **argv) {
                     if (sample < 3) {
                         adc_pedestal_samples.push_back(adc_value);
                     }
+                    adc_samples.push_back(adc_value);
                     if (adc_value > adc_peak_value) {
                         adc_peak_value = adc_value;
                         adc_peak_index = sample;
@@ -550,30 +546,43 @@ int main(int argc, char **argv) {
                         toa_ns -= 25.0;
                     }
                     // * --- timewalk correction ---
-                    double param0 = timewalk_param0_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
-                    double param1 = timewalk_param1_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
-                    double param2 = timewalk_param2_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
-                    double param3 = timewalk_param3_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
-                    double timewalk_correction_ns = param1 / std::pow(adc_peak_value_pede_sub - param2, param3);
+                    auto* timewalk_lut = timewalk_lut_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    double timewalk_correction_ns = timewalk_lut->Eval(adc_peak_value_pede_sub);
+                    double timewalk_correction_ns_max = timewalk_lut->Eval(1023.0);
+                    double toa_before_timewalk = toa_ns;
                     toa_ns -= timewalk_correction_ns;
                     // * --- channel offset correction ---
-                    double channel_toa_offset = toa_offset_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
-                    toa_ns -= channel_toa_offset;
+                    // double channel_toa_offset = toa_offset_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    // toa_ns -= channel_toa_offset;
 
                     h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
                     h2d_toa_adc_max_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(adc_peak_value_pede_sub, toa_ns);
                     h2d_toa_code_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_first_value, toa_ns);
 
-                    if (toa_ns >= 0.0) {
+                    if (toa_first_value > 0) {
                         toa_list_this_event.push_back(toa_ns);
                         adc_list_this_event.push_back(adc_peak_value_pede_sub);
                         adc_weighted_toa_sum += toa_ns * adc_peak_value_pede_sub;
                         adc_weight_sum += adc_peak_value_pede_sub;
                         adc_toa_on_sum += adc_peak_value_pede_sub;
+
+                        for (int _sample_machinegun = 0; _sample_machinegun < machine_gun_samples; _sample_machinegun++) {
+                            double _sample_time_ns = static_cast<double>(_sample_machinegun) * 25.0 - toa_ns;
+                            double _adc_value = static_cast<double>(adc_samples[_sample_machinegun]);
+                            h2d_channel_waveform_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(_sample_time_ns, _adc_value);
+                        }
+
+                        // h2d_channel_seed_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(
+                        //     seed_channel_toa_ns, toa_ns
+                        // );
+                        auto valid_aligner_channel_index = from_total_channel_to_valid_channel(channel + vldb_id * FPGA_CHANNEL_NUMBER);
+                        if (valid_aligner_channel_index != -1)
+                            hits.emplace_back(valid_aligner_channel_index, toa_ns);
+
                     }
                     if (entry < event_display_number) {
                         event_display_adc_hitmap[entry]->Fill(uni_col + 0.5, uni_row + 0.5, adc_peak_value_pede_sub);
-                        if (toa_ns > 0.0)
+                        if (toa_first_value > 0 && toa_ns < 300.0)
                             event_display_toa_hitmap[entry]->Fill(uni_col + 0.5, uni_row + 0.5, toa_ns);
                     }
                 }
@@ -585,6 +594,7 @@ int main(int argc, char **argv) {
         event_adc_toa_on_list.push_back(adc_toa_on_sum);
         event_adc_list.push_back(adc_sum);
         event_leading_toa_list.push_back(leading_toa);
+        aligner.addEvent(hits);
         // if (adc_weight_sum > 0.0) {
         //     adc_weighted_event_toa = adc_weighted_toa_sum / adc_weight_sum;
         //     // h1d_event_average_toa->Fill(adc_weighted_event_toa);
@@ -602,6 +612,37 @@ int main(int argc, char **argv) {
     spdlog::info("Number of single ToA hits: {}", num_single_ToA);
     spdlog::info("Number of multiple ToA hits: {}", num_multi_ToA);
     spdlog::info("Percentage of single ToA hits: {:.2f}%", 100.0 * static_cast<double>(num_single_ToA) / static_cast<double>(num_single_ToA + num_multi_ToA));  
+
+    auto offsets = aligner.solveAll(false);
+
+    double prev_mean_abs = 1e99;
+    for (int iter=0; iter<5; ++iter) {
+        aligner.irlsHuberUpdate(offsets);
+        auto new_offsets = aligner.solveAll(false);
+
+        // 计算平均绝对残差
+        double mean_abs = 0; int cnt=0;
+        for (const auto& p : aligner.pairs) if (p.w>0) {
+            double r = (new_offsets[p.i]-new_offsets[p.j]) - p.mu;
+            mean_abs += std::abs(r); ++cnt;
+        }
+        mean_abs /= std::max(1, cnt);
+        std::cout << "IRLS iter " << iter+1 << " mean|res|=" << mean_abs << " ns\n";
+
+        if (std::abs(prev_mean_abs - mean_abs) < 0.01) { // 0.01ns 阈值
+            offsets = std::move(new_offsets);
+            break;
+        }
+        prev_mean_abs = mean_abs;
+        offsets = std::move(new_offsets);
+    }
+
+    std::cout << "First 16 recovered offsets (ns):\n";
+    for (int i=0;i<16;++i) {
+        std::cout << i << ": " << std::fixed << std::setprecision(3) << offsets[i] << "\n";
+    }
+
+
 
     std::string annotation_canvas_title = CANVAS_TITLE;
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
@@ -639,6 +680,17 @@ int main(int argc, char **argv) {
 
     output_root->cd();
 
+        // 保存
+    aligner.cfg.out_root = output_root;
+    aligner.saveResults(offsets);
+
+    // skip if single ToA histogram is empty
+    if (h1i_toa_frequency->GetEntries() < 1) {
+        spdlog::warn("No ToA hits found, skipping output histograms.");
+        output_root->Close();
+        return 0;
+    }
+
     TCanvas *canvas_toa_frequency = new TCanvas("canvas_toa_frequency", "ToA Frequency", 800, 600);
     canvas_toa_frequency->cd();
     format_1i_hist_canvas(canvas_toa_frequency, h1i_toa_frequency, kBlue, annotation_canvas_title, annotation_testbeam_title, "Generated on " + date_stream.str());
@@ -662,230 +714,6 @@ int main(int argc, char **argv) {
     canvas_toa_adc_max_corr->Write();
     canvas_toa_adc_max_corr->Close();
 
-    TCanvas *canvas_leading_toa_vs_adc = new TCanvas("canvas_leading_toa_vs_adc", "Leading ToA vs ADC Sum", 800, 600);
-    canvas_leading_toa_vs_adc->cd();
-    auto sorted_event_adc_list = event_adc_list;
-    std::sort(sorted_event_adc_list.begin(), sorted_event_adc_list.end());
-    double adc_90_percentile = sorted_event_adc_list[static_cast<size_t>(0.9 * static_cast<double>(sorted_event_adc_list.size()))];
-    TH2D *h2d_leading_toa_vs_adc = new TH2D("h2d_leading_toa_vs_adc", "h2d_leading_toa_vs_adc;ADC Peak Value;Leading ToA [ns]", 256, 0, adc_90_percentile*1.3, 250, 0, 250.0);
-    for (size_t i = 0; i < event_adc_list.size(); i++) {
-        h2d_leading_toa_vs_adc->Fill(event_adc_list[i], event_leading_toa_list[i]);
-    }
-    format_2d_hist_canvas(canvas_leading_toa_vs_adc, h2d_leading_toa_vs_adc, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Leading ToA vs ADC Sum");
-    canvas_leading_toa_vs_adc->Print(out_pdf.c_str());
-    canvas_leading_toa_vs_adc->Write();
-    canvas_leading_toa_vs_adc->Close();
-
-    TCanvas *canvas_event_toa = new TCanvas("canvas_event_toa", "Event ToA vs ADC Weighted ToA", 800, 600);
-    canvas_event_toa->cd();
-    TH1D *h1d_event_adc_weighted_toa = new TH1D("h1d_event_adc_weighted_toa", "h1d_event_adc_weighted_toa;ADC Weighted ToA per Event (ns);Counts", 250, 0, 250.0);
-    TH1D *h1d_event_leading_toa = new TH1D("h1d_event_leading_toa", "h1d_event_leading_toa;Leading ToA per Event (ns);Counts", 250, 0, 250.0);
-    for (size_t i = 0; i < event_adc_weighted_toa_list.size(); i++) {
-        h1d_event_adc_weighted_toa->Fill(event_adc_weighted_toa_list[i]);
-    }
-    for (size_t i = 0; i < event_leading_toa_list.size(); i++) {
-        h1d_event_leading_toa->Fill(event_leading_toa_list[i]);
-    }
-    double max_y_adc_weighted = h1d_event_adc_weighted_toa->GetMaximum();
-    double max_y_leading = h1d_event_leading_toa->GetMaximum();
-    double max_y = std::max(max_y_adc_weighted, max_y_leading);
-    h1d_event_adc_weighted_toa->SetMaximum(max_y * 1.3);
-    format_1d_hist_canvas(canvas_event_toa, h1d_event_adc_weighted_toa, kBlue, annotation_canvas_title, annotation_testbeam_title, "Event ADC Weighted ToA");
-    double adc_weighted_pre_fit_min = h1d_event_adc_weighted_toa->GetMean() - 2.0 * h1d_event_adc_weighted_toa->GetRMS();
-    double adc_weighted_pre_fit_max = h1d_event_adc_weighted_toa->GetMean() + 2.0 * h1d_event_adc_weighted_toa->GetRMS();
-    TF1 *pre_fit_adc_weighted = new TF1("pre_fit_adc_weighted", "gaus", adc_weighted_pre_fit_min, adc_weighted_pre_fit_max);
-    h1d_event_adc_weighted_toa->Fit(pre_fit_adc_weighted, "RQ");
-    double adc_weighted_fit_mean = pre_fit_adc_weighted->GetParameter(1);
-    double adc_weighted_fit_sigma = pre_fit_adc_weighted->GetParameter(2);
-    TF1 *fit_adc_weighted = new TF1("fit_adc_weighted", "gaus", adc_weighted_fit_mean - 2.0 * adc_weighted_fit_sigma, adc_weighted_fit_mean + 2.0 * adc_weighted_fit_sigma);
-    h1d_event_adc_weighted_toa->Fit(fit_adc_weighted, "RQ");
-    delete pre_fit_adc_weighted;
-    fit_adc_weighted->SetLineColor(kBlue);
-    fit_adc_weighted->Draw("SAME");
-
-    h1d_event_leading_toa->SetLineColor(kRed);
-    h1d_event_leading_toa->Draw("SAME");
-    double leading_pre_fit_min = h1d_event_leading_toa->GetMean() - 2.0 * h1d_event_leading_toa->GetRMS();
-    double leading_pre_fit_max = h1d_event_leading_toa->GetMean() + 2.0 * h1d_event_leading_toa->GetRMS();
-    TF1 *pre_fit_leading = new TF1("pre_fit_leading", "gaus", leading_pre_fit_min, leading_pre_fit_max);
-    h1d_event_leading_toa->Fit(pre_fit_leading, "RQ");
-    double leading_fit_mean = pre_fit_leading->GetParameter(1);
-    double leading_fit_sigma = pre_fit_leading->GetParameter(2);
-    TF1 *fit_leading = new TF1("fit_leading", "gaus", leading_fit_mean - 2.0 * leading_fit_sigma, leading_fit_mean + 2.0 * leading_fit_sigma);
-    h1d_event_leading_toa->Fit(fit_leading, "RQ");
-    delete pre_fit_leading;
-    fit_leading->SetLineColor(kRed);
-    fit_leading->Draw("SAME");
-    TLegend *legend_event_toa = new TLegend(0.6, 0.6, 0.88, 0.88);
-    legend_event_toa->SetBorderSize(0);
-    legend_event_toa->SetFillStyle(0);
-    legend_event_toa->AddEntry(h1d_event_adc_weighted_toa, "ADC Weighted ToA", "l");
-    legend_event_toa->AddEntry(fit_adc_weighted, Form("Fit: #mu=%.2f ns, #sigma=%.2f ns", adc_weighted_fit_mean, adc_weighted_fit_sigma), "l");
-    legend_event_toa->AddEntry(h1d_event_leading_toa, "Leading ToA", "l");
-    legend_event_toa->AddEntry(fit_leading, Form("Fit: #mu=%.2f ns, #sigma=%.2f ns", leading_fit_mean, leading_fit_sigma), "l");
-    legend_event_toa->Draw();
-    canvas_event_toa->Print(out_pdf.c_str());
-    canvas_event_toa->Write();
-    canvas_event_toa->Close();
-
-    // ! Compare different adc sum
-    std::vector<double> fit_range_sigmas = {2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5}; // in sigma
-    std::vector<double> fit_range_offsets = {-0.4, -0.2, 0.0, 0.2, 0.4}; // in sigma
-
-    TCanvas *canvas_adc_sum_comparison = new TCanvas("canvas_adc_sum_comparison", "ADC Sum Comparison", 800, 600);
-    canvas_adc_sum_comparison->cd();
-    auto sorted_event_adc_toa_on_list = event_adc_toa_on_list;
-    std::sort(sorted_event_adc_toa_on_list.begin(), sorted_event_adc_toa_on_list.end());
-    double adc_toa_on_90_percentile = sorted_event_adc_toa_on_list[static_cast<size_t>(0.9 * static_cast<double>(sorted_event_adc_toa_on_list.size()))];
-    auto sorted_event_raw_adc_list = event_adc_list;
-    std::sort(sorted_event_raw_adc_list.begin(), sorted_event_raw_adc_list.end());
-    double raw_adc_90_percentile = sorted_event_raw_adc_list[static_cast<size_t>(0.9 * static_cast<double>(sorted_event_raw_adc_list.size()))];
-    double x_max = std::max(adc_toa_on_90_percentile, raw_adc_90_percentile) * 1.8;
-    TH1D *h1d_event_raw_adc = new TH1D("h1d_event_raw_adc", "h1d_event_raw_adc;ADC Sum;Counts", 256, 0, x_max);
-    TH1D *h1d_event_adc_toa_on = new TH1D("h1d_event_adc_toa_on", "h1d_event_adc_toa_on;ADC Sum (ToA on);Counts", 256, 0, x_max);
-    TH1D *h1d_event_adc_25ns_central_window = new TH1D("h1d_event_adc_25ns_central_window", "h1d_event_adc_25ns_central_window;ADC Sum (25 ns central window);Counts", 256, 0, x_max);
-    TH1D *h1d_event_adc_10ns_central_window = new TH1D("h1d_event_adc_10ns_central_window", "h1d_event_adc_10ns_central_window;ADC Sum (10 ns central window);Counts", 256, 0, x_max);
-    for (size_t i = 0; i < event_adc_list.size(); i++) {
-        h1d_event_raw_adc->Fill(event_adc_list[i]);
-        if (event_adc_toa_on_list[i] > 0.0)
-            h1d_event_adc_toa_on->Fill(event_adc_toa_on_list[i]);
-        if (event_leading_toa_list[i] >= leading_fit_mean - 12.5 && event_leading_toa_list[i] <= leading_fit_mean + 12.5)
-            h1d_event_adc_25ns_central_window->Fill(event_adc_list[i]);
-        if (event_leading_toa_list[i] >= leading_fit_mean - 5.0 && event_leading_toa_list[i] <= leading_fit_mean + 5.0)
-            h1d_event_adc_10ns_central_window->Fill(event_adc_list[i]);
-    }
-    // normalize to number of events
-    h1d_event_raw_adc->Scale(1.0 / static_cast<double>(h1d_event_raw_adc->GetEntries()));
-    h1d_event_adc_toa_on->Scale(1.0 / static_cast<double>(h1d_event_adc_toa_on->GetEntries()));
-    h1d_event_adc_25ns_central_window->Scale(1.0 / static_cast<double>(h1d_event_adc_25ns_central_window->GetEntries()));
-    h1d_event_adc_10ns_central_window->Scale(1.0 / static_cast<double>(h1d_event_adc_10ns_central_window->GetEntries()));
-    double max_y_raw_adc = h1d_event_raw_adc->GetMaximum();
-    double max_y_adc_toa_on = h1d_event_adc_toa_on->GetMaximum();
-    double max_y_adc = std::max(max_y_raw_adc, max_y_adc_toa_on);
-    h1d_event_raw_adc->SetMaximum(max_y_adc * 1.3);
-    format_1d_hist_canvas(canvas_adc_sum_comparison, h1d_event_raw_adc, kBlue, annotation_canvas_title, annotation_testbeam_title, "Event Raw ADC Sum");
-    h1d_event_adc_toa_on->SetLineColor(kRed);
-    h1d_event_adc_toa_on->Draw("SAME");
-    h1d_event_adc_25ns_central_window->SetLineColor(kGreen);
-    h1d_event_adc_25ns_central_window->Draw("SAME");
-    h1d_event_adc_10ns_central_window->SetLineColor(kMagenta);
-    h1d_event_adc_10ns_central_window->Draw("SAME");
-
-    double raw_adc_fit_mean = 0.0;
-    double raw_adc_fit_mean_err_stat = 0.0;
-    double raw_adc_fit_mean_err_syst = 0.0;
-    double raw_adc_fit_sigma = 0.0;
-    double raw_adc_fit_sigma_err_stat = 0.0;
-    double raw_adc_fit_sigma_err_syst = 0.0;
-    double raw_adc_fit_resolution = 0.0;
-    double raw_adc_fit_resolution_err = 0.0;
-    crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_raw_adc, fit_range_sigmas, fit_range_offsets, kBlue, raw_adc_fit_mean, raw_adc_fit_mean_err_stat, raw_adc_fit_mean_err_syst, raw_adc_fit_sigma, raw_adc_fit_sigma_err_stat, raw_adc_fit_sigma_err_syst, raw_adc_fit_resolution, raw_adc_fit_resolution_err);
-
-    double adc_toa_on_fit_mean = 0.0;
-    double adc_toa_on_fit_mean_err_stat = 0.0;
-    double adc_toa_on_fit_mean_err_syst = 0.0;
-    double adc_toa_on_fit_sigma = 0.0;
-    double adc_toa_on_fit_sigma_err_stat = 0.0;
-    double adc_toa_on_fit_sigma_err_syst = 0.0;
-    double adc_toa_on_fit_resolution = 0.0;
-    double adc_toa_on_fit_resolution_err = 0.0;
-    crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_adc_toa_on, fit_range_sigmas, fit_range_offsets, kRed, adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst, adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst, adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err);
-
-    double adc_25ns_fit_mean = 0.0;
-    double adc_25ns_fit_mean_err_stat = 0.0;
-    double adc_25ns_fit_mean_err_syst = 0.0;
-    double adc_25ns_fit_sigma = 0.0;
-    double adc_25ns_fit_sigma_err_stat = 0.0;
-    double adc_25ns_fit_sigma_err_syst = 0.0;
-    double adc_25ns_fit_resolution = 0.0;
-    double adc_25ns_fit_resolution_err = 0.0;
-    crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_adc_25ns_central_window, fit_range_sigmas, fit_range_offsets, kGreen, adc_25ns_fit_mean, adc_25ns_fit_mean_err_stat, adc_25ns_fit_mean_err_syst, adc_25ns_fit_sigma, adc_25ns_fit_sigma_err_stat, adc_25ns_fit_sigma_err_syst, adc_25ns_fit_resolution, adc_25ns_fit_resolution_err);
-
-    double adc_10ns_fit_mean = 0.0;
-    double adc_10ns_fit_mean_err_stat = 0.0;
-    double adc_10ns_fit_mean_err_syst = 0.0;
-    double adc_10ns_fit_sigma = 0.0;
-    double adc_10ns_fit_sigma_err_stat = 0.0;
-    double adc_10ns_fit_sigma_err_syst = 0.0;
-    double adc_10ns_fit_resolution = 0.0;
-    double adc_10ns_fit_resolution_err = 0.0;
-    crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_adc_10ns_central_window, fit_range_sigmas, fit_range_offsets, kMagenta, adc_10ns_fit_mean, adc_10ns_fit_mean_err_stat, adc_10ns_fit_mean_err_syst, adc_10ns_fit_sigma, adc_10ns_fit_sigma_err_stat, adc_10ns_fit_sigma_err_syst, adc_10ns_fit_resolution, adc_10ns_fit_resolution_err);
-
-    TLegend *legend_adc_sum = new TLegend(0.6, 0.3, 0.89, 0.89);
-    legend_adc_sum->SetBorderSize(0);
-    legend_adc_sum->SetFillStyle(0);
-    legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("ADC Sum (Raw) (N=%.0f)", h1d_event_raw_adc->GetEntries()), "l");
-    legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("Resolution: %.2f%% #pm %.2f%%", raw_adc_fit_resolution, raw_adc_fit_resolution_err), "l");
-    legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", raw_adc_fit_mean, raw_adc_fit_mean_err_stat, raw_adc_fit_mean_err_syst), "l");
-    legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", raw_adc_fit_sigma, raw_adc_fit_sigma_err_stat, raw_adc_fit_sigma_err_syst), "l");
-
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("ADC Sum (ToA on) (N=%.0f)", h1d_event_adc_toa_on->GetEntries()), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Resolution: %.2f%% #pm %.2f%%", adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst), "l");
-
-
-    legend_adc_sum->AddEntry(h1d_event_adc_25ns_central_window, Form("ADC Sum (25 ns window) (N=%.0f)", h1d_event_adc_25ns_central_window->GetEntries()), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_25ns_central_window, Form("Resolution: %.2f%% #pm %.2f%%", adc_25ns_fit_resolution, adc_25ns_fit_resolution_err), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_25ns_central_window, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_25ns_fit_mean, adc_25ns_fit_mean_err_stat, adc_25ns_fit_mean_err_syst), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_25ns_central_window, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_25ns_fit_sigma, adc_25ns_fit_sigma_err_stat, adc_25ns_fit_sigma_err_syst), "l");
-
-    legend_adc_sum->AddEntry(h1d_event_adc_10ns_central_window, Form("ADC Sum (10 ns window) (N=%.0f)", h1d_event_adc_10ns_central_window->GetEntries()), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_10ns_central_window, Form("Resolution: %.2f%% #pm %.2f%%", adc_10ns_fit_resolution, adc_10ns_fit_resolution_err), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_10ns_central_window, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_10ns_fit_mean, adc_10ns_fit_mean_err_stat, adc_10ns_fit_mean_err_syst), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_10ns_central_window, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_10ns_fit_sigma, adc_10ns_fit_sigma_err_stat, adc_10ns_fit_sigma_err_syst), "l");
-
-    legend_adc_sum->Draw();
-    canvas_adc_sum_comparison->Print(out_pdf.c_str());
-    canvas_adc_sum_comparison->Write();
-    canvas_adc_sum_comparison->Close();
-
-    // print the example channel
-    TCanvas *canvas_toa_adc_max_corr_example = new TCanvas("canvas_toa_adc_max_corr_example", "ToA ADC Max Correction Example Channel", 800, 600);
-    auto h2d_example = h2d_toa_adc_max_corr_list[chn_example];
-    h2d_example->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
-    h2d_example->GetYaxis()->SetTitle("Corrected ToA [ns]");
-    format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
-    canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
-    canvas_toa_adc_max_corr_example->Write();
-    canvas_toa_adc_max_corr_example->Close();
-
-    TCanvas *canvas_toa_code_corr = new TCanvas("canvas_toa_code_corr", "ToA Code Correction", 1200, 800);
-    draw_mosaic_fixed(*canvas_toa_code_corr, h2d_toa_code_corr_list, topo_wave);
-    canvas_toa_code_corr->Modified();
-    canvas_toa_code_corr->Update();
-    canvas_toa_code_corr->Print(out_pdf.c_str());
-    canvas_toa_code_corr->Write();
-    canvas_toa_code_corr->Close();
-
-    for (int ev=0; ev<event_display_number; ev++) {
-        TCanvas *canvas_event_adc = new TCanvas(("canvas_event_" + std::to_string(ev) + "_adc").c_str(),
-                                                ("Event " + std::to_string(ev) + " ADC Hitmap").c_str(),
-                                                800, 600);
-        auto h2d_adc = event_display_adc_hitmap[ev];
-        
-        h2d_adc->GetXaxis()->SetTitle("X");
-        h2d_adc->GetYaxis()->SetTitle("Y");
-        format_2d_hist_canvas(canvas_event_adc, h2d_adc, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Event_" + std::to_string(ev), false);
-        canvas_event_adc->Print(out_pdf.c_str());
-        canvas_event_adc->Write();
-        canvas_event_adc->Close();
-
-        TCanvas *canvas_event_toa = new TCanvas(("canvas_event_" + std::to_string(ev) + "_toa").c_str(),
-                                                ("Event " + std::to_string(ev) + " ToA Hitmap").c_str(),
-                                                800, 600);
-        auto h2d_toa = event_display_toa_hitmap[ev];
-        h2d_toa->GetXaxis()->SetTitle("X");
-        h2d_toa->GetYaxis()->SetTitle("Y");
-        format_2d_hist_canvas(canvas_event_toa, h2d_toa, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Event_" + std::to_string(ev), false);
-        canvas_event_toa->Print(out_pdf.c_str());
-        canvas_event_toa->Write();
-        canvas_event_toa->Close();
-
-        delete canvas_event_adc;
-        delete canvas_event_toa;
-    }
-
     // draw dummy page to close the pdf
     TCanvas *canvas_dummy = new TCanvas("canvas_dummy", "Dummy Canvas", 800, 600);
     canvas_dummy->Print((out_pdf + "]").c_str());
@@ -895,8 +723,6 @@ int main(int argc, char **argv) {
     delete canvas_toa_frequency;
     delete canvas_raw_toa_ns;
     delete canvas_toa_adc_max_corr;
-    delete canvas_toa_code_corr;
-    delete canvas_toa_adc_max_corr_example;
     delete canvas_dummy;
 
     spdlog::info("Output file {} has been saved.", script_output_file);

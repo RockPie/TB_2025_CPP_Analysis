@@ -4,6 +4,7 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "H2GCROC_TimewalkLUT.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -22,6 +23,8 @@ int main(int argc, char **argv) {
 
     options.add_options()
         ("f,file", "Input .root file", cxxopts::value<std::string>())
+        ("c,correction", "Input ToA correction .root file", cxxopts::value<std::string>())
+        ("d,dnl", "Input DNL .root file", cxxopts::value<std::string>())
         ("o,output", "Output .root file", cxxopts::value<std::string>())
         ("e,events", "Number of events to process", cxxopts::value<int>()->default_value("-1"))
         ("v,verbose", "Verbose mode", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
@@ -101,6 +104,7 @@ int main(int argc, char **argv) {
 
     spdlog::info("Script name: {}", script_name);
     spdlog::info("Input file: {}", script_input_file);
+    spdlog::info("Input bx correction file: {}", parsed["correction"].as<std::string>());
     spdlog::info("Output file: {} in {}", script_output_file, script_output_folder);
     spdlog::info("Number of events: {}", script_n_events);
 
@@ -121,7 +125,104 @@ int main(int argc, char **argv) {
     // * --------------------------------------------------------------------------------
     int machine_gun_samples = 16;
     int vldb_number = 2;
-    int chn_example = 299; // print this channel separately
+    int chn_example = 299; // print this channel seprately
+
+    TFile *input_correction_root = new TFile(parsed["correction"].as<std::string>().c_str(), "READ");
+    if (input_correction_root->IsZombie()) {
+        spdlog::error("Failed to open input correction file {}", parsed["correction"].as<std::string>());
+        return 1;
+    }
+    // read all channel correction optimal values
+    auto getParam = [](TDirectory* dir, const char* name, bool required = true) -> double {
+        TParameter<double>* p = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        p = dir->Get<TParameter<double>>(name);
+    #else
+        dir->GetObject(name, p);
+    #endif
+        if (!p) {
+            if (required) {
+                spdlog::error("Missing TParameter<double> key '{}' in directory '{}'",
+                            name, dir->GetPath());
+                throw std::runtime_error(std::string("Missing key: ") + name);
+            } else {
+                spdlog::warn("Missing optional key '{}' in directory '{}'; will use NaN.",
+                            name, dir->GetPath());
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+        return p->GetVal();
+    };
+    // go to "Optimal_Bx_Slip_Parameters" directory
+    input_correction_root->cd("Optimal_Bx_Slip_Parameters");
+    TDirectory* param_dir = gDirectory;
+    std::map<int, double> toa_correction_map;
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string param_name = "optimal_bx_slip_ch" + std::to_string(chn);
+        double optimal_value = getParam(param_dir, param_name.c_str());
+        toa_correction_map[chn] = optimal_value;
+        spdlog::info("Channel {}: optimal_bx_slip = {}", chn, optimal_value);
+    }
+    input_correction_root->Close();
+
+    TFile *input_dnl_root = new TFile(parsed["dnl"].as<std::string>().c_str(), "READ");
+    if (input_dnl_root->IsZombie()) {
+        spdlog::error("Failed to open input DNL file {}", parsed["dnl"].as<std::string>());
+        return 1;
+    }
+
+    std::vector<std::vector<double>> dnl_coarse_tdc_list(vldb_number* FPGA_CHANNEL_NUMBER);
+    std::vector<std::vector<double>> dnl_fine_tdc_list(vldb_number* FPGA_CHANNEL_NUMBER);
+    input_dnl_root->cd("DNL_Calibration");
+    for (int chn=0; chn<FPGA_CHANNEL_NUMBER * vldb_number; chn++) {
+        std::string dnl_coarse_name = "dnl_coarse_tdc_ch" + std::to_string(chn);
+        TVectorD* dnl_coarse_tdc = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        dnl_coarse_tdc = gDirectory->Get<TVectorD>(dnl_coarse_name.c_str());
+    #else
+        gDirectory->GetObject(dnl_coarse_name.c_str(), dnl_coarse_tdc);
+    #endif
+        if (!dnl_coarse_tdc) {
+            spdlog::error("Missing TVectorD key '{}' in directory '{}'",
+                        dnl_coarse_name, gDirectory->GetPath());
+            return 1;
+        }
+        std::vector<double> coarse_dnl(dnl_coarse_tdc->GetNoElements());
+        for (int idx = 0; idx < dnl_coarse_tdc->GetNoElements(); ++idx) {
+            coarse_dnl[idx] = (*dnl_coarse_tdc)[idx];
+        }
+        dnl_coarse_tdc_list[chn] = std::move(coarse_dnl);
+        std::string dnl_fine_name = "dnl_fine_tdc_ch" + std::to_string(chn);
+        TVectorD* dnl_fine_tdc = nullptr;
+    #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
+        dnl_fine_tdc = gDirectory->Get<TVectorD>(dnl_fine_name.c_str());
+    #else
+        gDirectory->GetObject(dnl_fine_name.c_str(), dnl_fine_tdc);
+    #endif
+        if (!dnl_fine_tdc) {
+            spdlog::error("Missing TVectorD key '{}' in directory '{}'",
+                        dnl_fine_name, gDirectory->GetPath());
+            return 1;
+        }
+        std::vector<double> fine_dnl(dnl_fine_tdc->GetNoElements());
+        for (int idx = 0; idx < dnl_fine_tdc->GetNoElements(); ++idx) {
+            fine_dnl[idx] = (*dnl_fine_tdc)[idx];
+        }
+        dnl_fine_tdc_list[chn] = std::move(fine_dnl);
+        spdlog::info("Channel {}: DNL coarse TDC size = {}, fine TDC size = {}",
+                     chn,
+                     dnl_coarse_tdc->GetNoElements(),
+                     dnl_fine_tdc->GetNoElements());
+        spdlog::info("Coarse DNL: ");
+        for (const auto& val : dnl_coarse_tdc_list[chn]) {
+            spdlog::info("{:.6f}, ", val);
+        }
+        spdlog::info("Fine DNL: ");
+        for (const auto& val : dnl_fine_tdc_list[chn]) {
+            spdlog::info("{:.6f}, ", val);
+        }
+    }
+    input_dnl_root->Close();
 
     TFile *input_root = new TFile(script_input_file.c_str(), "READ");
     if (input_root->IsZombie()) {
@@ -210,30 +311,33 @@ int main(int argc, char **argv) {
         h1d_raw_toa_ns_list.push_back(h1d_raw_toa_ns);
     }
 
-    // * --- Fine TDC Code distribution ----------------------------------------------------------
-    // only 3 bits
-    std::vector<TH1I*> h1d_fine_tdc_code_list;
+    // * --- ToA ns v.s. ADC max correction histograms --------------------------------------
+    std::vector<TH2D*> h2d_toa_adc_max_corr_list;;
     for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
-        std::string hist_name = "h1d_fine_tdc_code_ch" + std::to_string(i);
-        TH1I *h1d_fine_tdc_code = new TH1I(hist_name.c_str(), (hist_name + ";Fine TDC Code;Counts").c_str(), 8, 0, 8);
-        h1d_fine_tdc_code->SetDirectory(nullptr);
-        h1d_fine_tdc_code_list.push_back(h1d_fine_tdc_code);
+        std::string hist_name = "h2d_toa_adc_max_corr_ch" + std::to_string(i);
+        TH2D *h2d_toa_adc_max_corr = new TH2D(hist_name.c_str(), (hist_name + ";Corrected ToA (ns);ADC Peak Value (pedestal subtracted)").c_str(),
+                                             256, 0, 1024,
+                                             256, 0, 25.0*static_cast<double>(machine_gun_samples));
+        h2d_toa_adc_max_corr->SetDirectory(nullptr);
+        h2d_toa_adc_max_corr_list.push_back(h2d_toa_adc_max_corr);
     }
 
-    // * --- Coarse TDC Code distribution ----------------------------------------------------------
-    // 5 bits
-    std::vector<TH1I*> h1d_coarse_tdc_code_list;
+    // * --- ToA ns v.s. ToA code correction histograms --------------------------------------
+    std::vector<TH2D*> h2d_toa_code_corr_list;
     for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
-        std::string hist_name = "h1d_coarse_tdc_code_ch" + std::to_string(i);
-        TH1I *h1d_coarse_tdc = new TH1I(hist_name.c_str(), (hist_name + ";Coarse TDC Code;Counts").c_str(), 32, 0, 32);
-        h1d_coarse_tdc->SetDirectory(nullptr);
-        h1d_coarse_tdc_code_list.push_back(h1d_coarse_tdc);
+        std::string hist_name = "h2d_toa_code_corr_ch" + std::to_string(i);
+        TH2D *h2d_toa_code_corr = new TH2D(hist_name.c_str(), (hist_name + ";Corrected ToA (ns);ToA Code").c_str(),
+                                           256, 0, 1024,
+                                           256, 0, 25.0*static_cast<double>(machine_gun_samples));
+        h2d_toa_code_corr->SetDirectory(nullptr);
+        h2d_toa_code_corr_list.push_back(h2d_toa_code_corr);
     }
 
     std::vector<std::vector<UInt_t>> toa_code_matrix(FPGA_CHANNEL_NUMBER * vldb_number, std::vector<UInt_t>());
     for (auto & vec : toa_code_matrix) {
         vec.reserve(entry_max);
     }
+
     std::vector<std::vector<double>> toa_ns_matrix(FPGA_CHANNEL_NUMBER * vldb_number, std::vector<double>());
     for (auto & vec : toa_ns_matrix) {
         vec.reserve(entry_max);
@@ -265,6 +369,7 @@ int main(int argc, char **argv) {
 
                 UInt_t toa_first_value = 0;
                 int toa_first_index = -1;
+
 
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int idx = sample*FPGA_CHANNEL_NUMBER + channel;
@@ -304,16 +409,34 @@ int main(int argc, char **argv) {
                     num_single_ToA++;
                     // only one ToA hit
                     // apply correction here if needed
-                    double toa_ns = decode_toa_value_ns(toa_first_value);
-                    Int_t fine_tdc_code = toa_first_value & 0x07;
-                    Int_t coarse_tdc_code = (toa_first_value >> 3) & 0x1F;
-                    h1d_fine_tdc_code_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(fine_tdc_code);
-                    h1d_coarse_tdc_code_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(coarse_tdc_code);
+                    auto& coarse_dnl_lookup = dnl_coarse_tdc_list[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    auto& fine_dnl_lookup = dnl_fine_tdc_list[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    // double toa_ns = decode_toa_value_ns(toa_first_value);
+                    double toa_ns = decode_toa_value_ns_with_dnl(
+                        toa_first_value,
+                        coarse_dnl_lookup,
+                        fine_dnl_lookup
+                    );
                     toa_ns += 25.0 * static_cast<double>(toa_first_index);
+                    double channel_optimal_bx_slip = toa_correction_map[channel + vldb_id * FPGA_CHANNEL_NUMBER];
+                    if (toa_first_value >= static_cast<UInt_t>(channel_optimal_bx_slip)) {
+                        toa_ns -= 25.0;
+                    }
                     h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
+                    h2d_toa_adc_max_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(adc_peak_value_pede_sub, toa_ns);
+                    h2d_toa_code_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_first_value, toa_ns);
                     toa_code_matrix[channel + vldb_id * FPGA_CHANNEL_NUMBER].push_back(toa_first_value);
                     toa_ns_matrix[channel + vldb_id * FPGA_CHANNEL_NUMBER].push_back(toa_ns);
                 }
+                    
+                // } else if (toa_showup_times > 1) {
+                //     num_multi_ToA++;
+                //     // multiple ToA hits
+                //     // currently, just take the first one
+                //     // double toa_ns = decode_toa_value_ns(toa_first_value);
+                //     // toa_ns += 25.0 * static_cast<double>(toa_first_index);
+                //     // h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
+                // }
             } // end of channel loop
         } // end of vldb loop
     } // end of event loop
@@ -360,6 +483,10 @@ int main(int argc, char **argv) {
     std::ostringstream date_stream;
     date_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
 
+    const int Nmin = 300;
+    const int max_expand = 6;
+    const bool enforce_monotonic = true;
+
     output_root->cd();
 
     TCanvas *canvas_toa_frequency = new TCanvas("canvas_toa_frequency", "ToA Frequency", 800, 600);
@@ -368,7 +495,7 @@ int main(int argc, char **argv) {
     canvas_toa_frequency->Print((out_pdf + "[").c_str());
     canvas_toa_frequency->Write();
     canvas_toa_frequency->Close();
-    
+
     TCanvas *canvas_raw_toa_ns = new TCanvas("canvas_raw_toa_ns", "Raw ToA in ns", 1200, 800);
     draw_mosaic_fixed(*canvas_raw_toa_ns, h1d_raw_toa_ns_list, topo_ped_median);
     canvas_raw_toa_ns->Modified();
@@ -377,188 +504,85 @@ int main(int argc, char **argv) {
     canvas_raw_toa_ns->Write();
     canvas_raw_toa_ns->Close();
 
-    TCanvas *canvas_fine_tdc_code = new TCanvas("canvas_fine_tdc_code", "Fine TDC Code", 1200, 800);
-    draw_mosaic_fixed(*canvas_fine_tdc_code, h1d_fine_tdc_code_list, topo_ped_median);
-    canvas_fine_tdc_code->Modified();
-    canvas_fine_tdc_code->Update();
-    canvas_fine_tdc_code->Print(out_pdf.c_str());
-    canvas_fine_tdc_code->Write();
-    canvas_fine_tdc_code->Close();
+    TCanvas *canvas_toa_adc_max_corr = new TCanvas("canvas_toa_adc_max_corr", "ToA ADC Max Correction", 1200, 800);
+    draw_mosaic_fixed(*canvas_toa_adc_max_corr, h2d_toa_adc_max_corr_list, topo_wave);
+    canvas_toa_adc_max_corr->Modified();
+    canvas_toa_adc_max_corr->Update();
+    canvas_toa_adc_max_corr->Print(out_pdf.c_str());
+    canvas_toa_adc_max_corr->Write();
+    canvas_toa_adc_max_corr->Close();
 
-    TCanvas *canvas_coarse_tdc_code = new TCanvas("canvas_coarse_tdc_code", "Coarse TDC Code", 1200, 800);
-    draw_mosaic_fixed(*canvas_coarse_tdc_code, h1d_coarse_tdc_code_list, topo_ped_median);
-    canvas_coarse_tdc_code->Modified();
-    canvas_coarse_tdc_code->Update();
-    canvas_coarse_tdc_code->Print(out_pdf.c_str());
-    canvas_coarse_tdc_code->Write();
-    canvas_coarse_tdc_code->Close();
-
+    // do the timewalk LUT generation here
+    // create a new directory
     output_root->cd();
-    const int example_vldb_id = 1;
-    const int example_asic_id = 0;
-    const int example_half_id = 1;
-    std::vector<int> color_list = {kBlue, kRed, kGreen+2, kMagenta+2, kCyan+2, kOrange+7, kViolet+7, kSpring+7, kTeal+7, kAzure+7, kPink+7};
-    TCanvas *example_fine_tdc_codes_canvas = new TCanvas("example_fine_tdc_codes_canvas", "Example Fine TDC Codes", 800, 600);
-    example_fine_tdc_codes_canvas->cd();
-
-    // First pass: find global maximum
-    double global_max = 0;
-    for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
-        int vldb_id = chn / FPGA_CHANNEL_NUMBER;
-        int chn_in_vldb = chn % FPGA_CHANNEL_NUMBER;
-        int chn_in_asic = chn_in_vldb % 76;
-        int asic_id = chn_in_vldb / 76;
-        int half_id = chn_in_asic / 38;
-        if (asic_id == example_asic_id && half_id == example_half_id && vldb_id == example_vldb_id) {
-            double hist_max = h1d_fine_tdc_code_list[chn]->GetMaximum();
-            if (hist_max > global_max) global_max = hist_max;
-        }
-    }
-
-    // Second pass: draw with correct range
-    bool first_hist_drawn = false;
-    TLegend *legend_example_fine_tdc = new TLegend(0.8,0.5,0.89,0.89);
-    legend_example_fine_tdc->SetBorderSize(0);
-    legend_example_fine_tdc->SetFillStyle(0);
-    for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
-        int vldb_id = chn / FPGA_CHANNEL_NUMBER;
-        int chn_in_vldb = chn % FPGA_CHANNEL_NUMBER;
-        int chn_in_asic = chn_in_vldb % 76;
-        int asic_id = chn_in_vldb / 76;
-        int half_id = chn_in_asic / 38;
-        if (asic_id == example_asic_id && half_id == example_half_id && vldb_id == example_vldb_id) {
-            TH1I* h1d_fine_tdc_copy = new TH1I(*h1d_fine_tdc_code_list[chn]);
-            // normalize
-            // h1d_fine_tdc_copy->Scale(1.0 / h1d_fine_tdc_copy->GetEntries());
-            if (!first_hist_drawn) {
-                // remove title and stat box for the first histogram
-                // h1d_fine_tdc_copy->SetTitle("");
-                // h1d_fine_tdc_copy->SetStats(0);
-                // h1d_fine_tdc_copy->GetXaxis()->SetTitle("Fine TDC Code");
-                // h1d_fine_tdc_copy->GetYaxis()->SetTitle("Counts");
-                // h1d_fine_tdc_copy->GetYaxis()->SetRangeUser(0, global_max*1.5);  // Use global max
-                // h1d_fine_tdc_copy->SetLineColor(kBlue);
-                // h1d_fine_tdc_copy->Draw("HIST");
-
-                format_1i_hist_canvas(example_fine_tdc_codes_canvas, h1d_fine_tdc_copy, kBlue, annotation_canvas_title, annotation_testbeam_title, "Fine TDC Code Distribution", static_cast<int>(global_max*1.5));
-                first_hist_drawn = true;
-            } else {
-                h1d_fine_tdc_copy->SetLineColor(color_list[(chn % color_list.size())]);
-                h1d_fine_tdc_copy->Draw("SAME");
-            }
-            legend_example_fine_tdc->AddEntry(h1d_fine_tdc_copy, ("Ch" + std::to_string(chn)).c_str(), "l");
-        }
-    }
-    legend_example_fine_tdc->Draw();
-    example_fine_tdc_codes_canvas->Modified();
-    example_fine_tdc_codes_canvas->Update();
-    example_fine_tdc_codes_canvas->Print(out_pdf.c_str());
-    example_fine_tdc_codes_canvas->Write();
-    example_fine_tdc_codes_canvas->Close();
-
-    // Draw the example coarse TDC codes
-    TCanvas *example_coarse_tdc_codes_canvas = new TCanvas("example_coarse_tdc_codes_canvas", "Example Coarse TDC Codes", 800, 600);
-    example_coarse_tdc_codes_canvas->cd();
-    // First pass: find global maximum
-    global_max = 0;
-    for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
-        int vldb_id = chn / FPGA_CHANNEL_NUMBER;
-        int chn_in_vldb = chn % FPGA_CHANNEL_NUMBER;
-        int chn_in_asic = chn_in_vldb % 76;
-        int asic_id = chn_in_vldb / 76;
-        int half_id = chn_in_asic / 38;
-        if (asic_id == example_asic_id && half_id == example_half_id && vldb_id == example_vldb_id) {
-            double hist_max = h1d_coarse_tdc_code_list[chn]->GetMaximum();
-            if (hist_max > global_max) global_max = hist_max;
-        }
-    }
-
-    // Second pass: draw with correct range
-    first_hist_drawn = false;
-    TLegend *legend_example_coarse_tdc = new TLegend(0.8,0.5,0.89,0.89);
-    legend_example_coarse_tdc->SetBorderSize(0);
-    legend_example_coarse_tdc->SetFillStyle(0);
-    for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
-        int vldb_id = chn / FPGA_CHANNEL_NUMBER;
-        int chn_in_vldb = chn % FPGA_CHANNEL_NUMBER;
-        int chn_in_asic = chn_in_vldb % 76;
-        int asic_id = chn_in_vldb / 76;
-        int half_id = chn_in_asic / 38;
-        if (asic_id == example_asic_id && half_id == example_half_id && vldb_id == example_vldb_id) {
-            TH1I* h1d_coarse_tdc_copy = new TH1I(*h1d_coarse_tdc_code_list[chn]);
-            // normalize
-            // h1d_coarse_tdc_copy->Scale(1.0 / h1d_coarse_tdc_copy->GetEntries());
-            if (!first_hist_drawn) {
-                format_1i_hist_canvas(example_coarse_tdc_codes_canvas, h1d_coarse_tdc_copy, kBlue, annotation_canvas_title, annotation_testbeam_title, "Coarse TDC Code Distribution", static_cast<int>(global_max*1.5));
-                first_hist_drawn = true;
-            } else {
-                h1d_coarse_tdc_copy->SetLineColor(color_list[(chn % color_list.size())]);
-                h1d_coarse_tdc_copy->Draw("SAME");
-            }
-            legend_example_coarse_tdc->AddEntry(h1d_coarse_tdc_copy, ("Ch" + std::to_string(chn)).c_str(), "l");
-        }
-    }
-    legend_example_coarse_tdc->Draw();
-    example_coarse_tdc_codes_canvas->Modified();
-    example_coarse_tdc_codes_canvas->Update();
-    example_coarse_tdc_codes_canvas->Print(out_pdf.c_str());
-    example_coarse_tdc_codes_canvas->Write();
-    example_coarse_tdc_codes_canvas->Close();
-
-
-    // calculate DNL from coarse TDC code histograms
-    // create new directory in output root file
-    output_root->cd();
-    TDirectory* dnl_directory = output_root->mkdir("DNL_Calibration");
-    dnl_directory->cd();
-    for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
-        TH1I* h1d_coarse_tdc = h1d_coarse_tdc_code_list[i];
-        std::vector<double> code_centers;
-        std::vector<double> normalized_counts;
-        int n_bins = h1d_coarse_tdc->GetNbinsX();
-        int total_counts = h1d_coarse_tdc->GetEntries();
-        for (int bin = 1; bin <= n_bins; bin++) {
-            double center = h1d_coarse_tdc->GetBinCenter(bin);
-            double count = static_cast<double>(h1d_coarse_tdc->GetBinContent(bin));
-            double normalized_count = (total_counts > 0) ? (count / static_cast<double>(total_counts)) : 0.0;
-            normalized_counts.push_back(normalized_count);
-        }
-        double current_center = 0.0;
-        for (int bin = 0; bin < n_bins; bin++) {
-            current_center += normalized_counts[bin] * 0.5;
-            code_centers.push_back(current_center);
-            current_center += normalized_counts[bin] * 0.5;
-        }
-        // write to TVectorD
-        TVectorD dnl_coarse_tdc(code_centers.size(), code_centers.data());
-        const std::string dnl_coarse_name = "dnl_coarse_tdc_ch" + std::to_string(i);
-        dnl_coarse_tdc.Write(dnl_coarse_name.c_str());
-        
-        TH1I* h1d_fine_tdc = h1d_fine_tdc_code_list[i];
-        std::vector<double> fine_code_centers;
-        std::vector<double> fine_normalized_counts;
-        int n_fine_bins = h1d_fine_tdc->GetNbinsX();
-        int total_fine_counts = h1d_fine_tdc->GetEntries();
-        for (int bin = 1; bin <= n_fine_bins; bin++) {
-            double center = h1d_fine_tdc->GetBinCenter(bin);
-            double count = static_cast<double>(h1d_fine_tdc->GetBinContent(bin));
-            double normalized_count = (total_fine_counts > 0) ? (count / static_cast<double>(total_fine_counts)) : 0.0;
-            fine_normalized_counts.push_back(normalized_count);
-        }
-        double current_fine_center = 0.0;
-        for (int bin = 0; bin < n_fine_bins; bin++) {
-            current_fine_center += fine_normalized_counts[bin] * 0.5;
-            fine_code_centers.push_back(current_fine_center);
-            current_fine_center += fine_normalized_counts[bin] * 0.5;
-        }
-
-        TVectorD dnl_fine_tdc(fine_code_centers.size(), fine_code_centers.data());
-        const std::string dnl_fine_name = "dnl_fine_tdc_ch" + std::to_string(i);
-        dnl_fine_tdc.Write(dnl_fine_name.c_str());
+    output_root->mkdir("Timewalk_LUTs");
+    output_root->cd("Timewalk_LUTs");
+    std::vector<TGraph*> lut_graphs;
+    for (int _chn=0; _chn<FPGA_CHANNEL_NUMBER * vldb_number; _chn++) {
+        auto h2d_chn = h2d_toa_adc_max_corr_list[_chn];
+        // rebin
+        h2d_chn->RebinX(
+            (h2d_chn->GetNbinsX() / 96) ?
+             h2d_chn->GetNbinsX() / 96 : 1);
+        auto lut = BuildFitFreeTimewalkLUT(
+            h2d_chn,
+            Nmin,
+            max_expand,
+            enforce_monotonic
+        );
+        auto g_lut = lut.AsGraph();
+        g_lut->SetName(("timewalk_lut_ch" + std::to_string(_chn)).c_str());
+        g_lut->SetTitle("Fit-free time-walk LUT;ADC;#Delta t_{median} [ps]");
+        g_lut->Write();
+        lut_graphs.push_back(g_lut);
     }
     output_root->cd();
 
+    TCanvas *canvas_toa_adc_max_fit_corr = new TCanvas("canvas_toa_adc_max_fit_corr", "ToA ADC Max Fit Correction", 1200, 800);
+    draw_mosaic_fixed(*canvas_toa_adc_max_fit_corr, h2d_toa_adc_max_corr_list, lut_graphs, topo_wave);
+    canvas_toa_adc_max_fit_corr->Modified();
+    canvas_toa_adc_max_fit_corr->Update();
+    canvas_toa_adc_max_fit_corr->Print(out_pdf.c_str());
+    canvas_toa_adc_max_fit_corr->Write();
+    canvas_toa_adc_max_fit_corr->Close();
 
+    TCanvas *canvas_toa_code_corr = new TCanvas("canvas_toa_code_corr", "ToA Code Correction", 1200, 800);
+    draw_mosaic_fixed(*canvas_toa_code_corr, h2d_toa_code_corr_list, topo_wave);
+    canvas_toa_code_corr->Modified();
+    canvas_toa_code_corr->Update();
+    canvas_toa_code_corr->Print(out_pdf.c_str());
+    canvas_toa_code_corr->Write();
+    canvas_toa_code_corr->Close();
+
+    TCanvas *canvas_toa_adc_max_corr_example = new TCanvas("canvas_toa_adc_max_corr_example", "ToA ADC Max Correction Example Channel", 800, 600);
+    auto h2d_example = h2d_toa_adc_max_corr_list[chn_example];
+    h2d_example->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
+    h2d_example->GetYaxis()->SetTitle("Corrected ToA [ns]");
+    h2d_example->RebinX(
+        (h2d_example->GetNbinsX() / 96) ?
+         h2d_example->GetNbinsX() / 96 : 1);
+    format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
+    TimewalkLUT lut = BuildFitFreeTimewalkLUT(h2d_example, Nmin, max_expand, enforce_monotonic);
+    TLegend *legend = new TLegend(0.6, 0.7, 0.88, 0.88);
+    legend->SetBorderSize(0);
+    legend->SetFillStyle(0);
+    std::unique_ptr<TGraph> g_lut_example(lut.AsGraph());
+    g_lut_example->SetLineColor(kRed+2);
+    g_lut_example->SetLineWidth(2);
+    g_lut_example->Draw("L SAME");
+    legend->AddEntry(g_lut_example.get(), "Timewalk LUT", "l");
+    legend->Draw();
+    canvas_toa_adc_max_corr_example->Modified();
+    canvas_toa_adc_max_corr_example->Update();
+
+    canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
+    canvas_toa_adc_max_corr_example->Write();
+    canvas_toa_adc_max_corr_example->Close();
+
+    auto g_lut = lut.AsGraph();
+    g_lut->SetName(("timewalk_lut_ch" + std::to_string(chn_example)).c_str());
+    g_lut->SetTitle("Fit-free time-walk LUT;ADC;#Delta t_{median} [ps]");
+    g_lut->Write();
 
     // draw dummy page to close the pdf
     TCanvas *canvas_dummy = new TCanvas("canvas_dummy", "Dummy Canvas", 800, 600);
@@ -568,6 +592,9 @@ int main(int argc, char **argv) {
 
     delete canvas_toa_frequency;
     delete canvas_raw_toa_ns;
+    delete canvas_toa_adc_max_corr;
+    delete canvas_toa_code_corr;
+    delete canvas_toa_adc_max_corr_example;
     delete canvas_dummy;
 
     spdlog::info("Output file {} has been saved.", script_output_file);

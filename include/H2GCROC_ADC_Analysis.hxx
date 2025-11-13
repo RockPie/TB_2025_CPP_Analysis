@@ -182,6 +182,15 @@ inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_
     pad->Modified();
 }
 
+inline void draw_on_pad(TPad* pad, TObject* obj, TObject* fit_obj, bool minimalist_axis, bool th2_logz, TF1* fit_func = nullptr){
+    draw_on_pad(pad, obj, minimalist_axis, th2_logz, fit_func);
+    if (fit_obj) {
+        pad->cd();
+        fit_obj->Draw("L SAME");
+        pad->Modified();
+    }
+}
+
 inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
     canvas->cd();
     hist->SetLineColor(line_color);
@@ -253,7 +262,7 @@ inline void format_tgrapherr_canvas(TCanvas* canvas, TGraphErrors* graph, const 
     canvas->Update();
 }
 
-inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info, Int_t y_max=0.0) {
     canvas->cd();
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
@@ -263,8 +272,12 @@ inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_c
     hist->GetYaxis()->SetLabelSize(0.04);
     hist->GetXaxis()->SetTitleOffset(0.8);
     hist->GetYaxis()->SetTitleOffset(1.0);
-    auto y_max = hist->GetMaximum();
-    hist->SetMaximum(y_max * 1.3);
+    if (y_max > 0.0)
+        hist->SetMaximum(y_max);
+    else {
+        auto y_max = hist->GetMaximum();
+        hist->SetMaximum(y_max * 1.3);
+    }
     hist->SetStats(kFALSE);
     hist->SetTitle("");
     hist->Draw();
@@ -501,6 +514,68 @@ inline void draw_mosaic_fixed(TCanvas& canvas,
     }
 
     canvas.Update();
+}
+
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TObject*>& items,
+                              const std::vector<TObject*>& fits,
+                              const MosaicTopology& topo)
+{
+    if (!topo.valid()) return;
+
+    std::vector<std::vector<TPad*>> pads;
+    build_gapless_grid(canvas, topo.NX, topo.NY, pads);
+
+    const int pad_count = topo.NX * topo.NY;
+
+    // 预构建 pad* 的线性数组，O(1) 访问
+    std::vector<TPad*> pad_linear(pad_count, nullptr);
+    for (int r = 0; r < topo.NY; ++r) {
+        for (int c = 0; c < topo.NX; ++c) {
+            int pr = r;
+            if (topo.reverse_row) pr = (topo.NY - 1) - r; // 因为 pad_linear 用的就是最终的行序
+            pad_linear[pr * topo.NX + c] = pads[r][c];
+        }
+    }
+
+    const int n_items_expected = topo.vldb_number * topo.channels_per_vldb;
+    const int n_items = std::min<int>( (int)items.size(), n_items_expected );
+
+    for (int i = 0; i < n_items; ++i) {
+        TObject* obj = items[i];
+        TObject* fit_obj = fits[i];
+        if (!obj) continue;
+        if (!fit_obj) continue;
+
+        // Skip empty histograms
+        if (auto* h1 = dynamic_cast<TH1*>(obj)) {
+            if (h1->GetEntries() == 0) continue;
+        } else if (auto* gr = dynamic_cast<TGraph*>(obj)) {
+            if (gr->GetN() == 0) continue;
+        }
+
+        int pad_lnr = topo.chan2pad[i];
+        if (pad_lnr < 0 || pad_lnr >= pad_count) continue;
+
+        TPad* pad = pad_linear[pad_lnr];
+        if (!pad) continue;
+
+        draw_on_pad(pad, obj, fit_obj, topo.minimalist_axis, topo.th2_logz);
+    }
+
+    canvas.Update();
+}
+
+inline void draw_mosaic_fixed(TCanvas& canvas,
+                              const std::vector<TH2D*>& h2,
+                              const std::vector<TGraph*>& fits,
+                              const MosaicTopology& topo)
+{
+    std::vector<TObject*> objs; objs.reserve(h2.size());
+    for (auto* p : h2) objs.push_back(static_cast<TObject*>(p));
+    std::vector<TObject*> fit_objs; fit_objs.reserve(fits.size());
+    for (auto* p : fits) fit_objs.push_back(static_cast<TObject*>(p));
+    draw_mosaic_fixed(canvas, objs, fit_objs, topo);
 }
 
 inline void draw_mosaic_fixed(TCanvas& canvas,

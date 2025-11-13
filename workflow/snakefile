@@ -28,7 +28,7 @@ def _creds():
     with open(CRED_FILE, "r") as fh:
         return json.load(fh)
 
-EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX"]
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX", "301_EventReconX", "302_EventMatchX", "303_Pedestal", "304_RawADC", "305_ADC_Fit_Compare", "306_ToA_Correction", "307_ToA_Timewalk", "308_ToA_Analysis", "309_ToA_DNL", "310_ToA_Offset", "311_RawToT", "313_ToA_Timewalk_LUT", "314_ToA_Analysis_LUT", "315_ToA_Residual"]
 
 # ---- Discover valid (dtype, run) pairs ----
 pairs = []
@@ -57,6 +57,12 @@ FINAL_TOA_CORRECTION_TARGETS = [f"{DUMP_DIR}/306_ToA_Correction/{p['dtype']}/{p[
 FINAL_TOA_TIMEWALK_TARGETS = [f"{DUMP_DIR}/307_ToA_Timewalk/{p['dtype']}/{p['run']}.root" for p in pairs]
 FINAL_TOA_ANALYSIS_TARGETS = [f"{DUMP_DIR}/308_ToA_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
 FINAL_TOA_DNL_TARGETS = [f"{DUMP_DIR}/309_ToA_DNL/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOT_RAWT_TARGETS = [f"{DUMP_DIR}/311_RawToT/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOA_TIMEWALK_LUT_TARGETS = [f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOA_ANALYSIS_LUT_TARGETS = [f"{DUMP_DIR}/314_ToA_Analysis_LUT/{p['dtype']}/{p['run']}.root" for p in pairs]
+
+FINAL_TOA_RESIDUAL_TARGETS = [f"{DUMP_DIR}/315_ToA_Residual/{p['dtype']}/{p['run']}.root" for p in pairs]
+
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -76,7 +82,12 @@ rule all:
         FINAL_TOA_CORRECTION_TARGETS,
         FINAL_TOA_TIMEWALK_TARGETS,
         FINAL_TOA_ANALYSIS_TARGETS,
-        FINAL_TOA_DNL_TARGETS
+        FINAL_TOA_DNL_TARGETS,
+        FINAL_TOT_RAWT_TARGETS,
+        ALL_312_OUTPUTS,
+        FINAL_TOA_TIMEWALK_LUT_TARGETS,
+        FINAL_TOA_ANALYSIS_LUT_TARGETS,
+        FINAL_TOA_RESIDUAL_TARGETS
 
 # =========================
 # Build system integration
@@ -495,5 +506,82 @@ rule ToA_Offset:
         mkdir -p {LOG_DIR}/310_ToA_Offset
         mkdir -p {DUMP_DIR}/310_ToA_Offset/{wildcards.dtype}
         mkdir -p {LOG_DIR}/310_ToA_Offset/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 311: RawToT
+rule RawToT:
+    input:
+        exe     = f"{BIN_DIR}/311_RawToT",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+    output:
+        root_out = f"{DUMP_DIR}/311_RawToT/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/311_RawToT/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/311_RawToT/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/311_RawToT/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 313: ToA_Timewalk_LUT
+rule ToA_Timewalk_LUT:
+    input:
+        exe     = f"{BIN_DIR}/313_ToA_Timewalk_LUT",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/313_ToA_Timewalk_LUT/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/313_ToA_Timewalk_LUT/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 314: ToA_Analysis_LUT
+rule ToA_Analysis_LUT:
+    input:
+        exe     = f"{BIN_DIR}/314_ToA_Analysis_LUT",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        timewalk_lut_in = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root",
+        offset_in = f"{DUMP_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/314_ToA_Analysis_LUT/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/314_ToA_Analysis_LUT/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/314_ToA_Analysis_LUT
+        mkdir -p {LOG_DIR}/314_ToA_Analysis_LUT
+        mkdir -p {DUMP_DIR}/314_ToA_Analysis_LUT/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/314_ToA_Analysis_LUT/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_lut_in} -d {input.dnl_in} -O {input.offset_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 315: ToA_Residual
+rule ToA_Residual:
+    input:
+        exe     = f"{BIN_DIR}/315_ToA_Residual",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        timewalk_in = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root"
+    output:
+        root_out = f"{DUMP_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/315_ToA_Residual
+        mkdir -p {LOG_DIR}/315_ToA_Residual
+        mkdir -p {DUMP_DIR}/315_ToA_Residual/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/315_ToA_Residual/{wildcards.dtype}
         {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
         """
