@@ -400,7 +400,8 @@ int main(int argc, char **argv) {
                         tot_showup_times++;
                     }
                 } // end of sample loop
-                double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 adc_sum += adc_peak_value_pede_sub;
 

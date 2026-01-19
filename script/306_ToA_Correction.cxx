@@ -297,7 +297,8 @@ int main(int argc, char **argv) {
                         tot_showup_times++;
                     }
                 } // end of sample loop
-                double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 adc_sum += adc_peak_value_pede_sub;
 
@@ -468,6 +469,38 @@ int main(int argc, char **argv) {
         }
         tg_bx_slip_list.push_back(tg_bx_slip);
         optimal_bx_slip_values.emplace_back(ch, optimal_bx_slip);
+
+        // save channel 299 as a pdf file
+        if (ch == chn_example) {
+            TCanvas* canvas_bx_slip_example = new TCanvas("canvas_bx_slip_example", "BX Slip vs Optimal BX Slip", 800, 600);
+            canvas_bx_slip_example->SetLeftMargin(0.15);
+            tg_bx_slip->SetTitle("");
+            // {\chi^2}_\Delta [ToA]
+            tg_bx_slip->GetYaxis()->SetTitle("#chi^{2}_{#Delta} [ToA]");
+            tg_bx_slip->GetYaxis()->SetTitleOffset(1.5);
+            tg_bx_slip->GetXaxis()->SetTitle("BX Slip Threshold [ToA]");
+            tg_bx_slip->Draw("AP");
+            // add TLatex annotation on the bottom right
+            TLatex *latex_bxslip = new TLatex();
+            latex_bxslip->SetNDC();
+            latex_bxslip->SetTextAlign(31);
+            latex_bxslip->SetTextSize(0.05);
+            latex_bxslip->SetTextFont(62);
+            latex_bxslip->DrawLatex(0.88, 0.3, annotation_canvas_title.c_str());
+            latex_bxslip->SetTextSize(0.035);
+            latex_bxslip->SetTextFont(42);
+            latex_bxslip->DrawLatex(0.88, 0.25, annotation_testbeam_title.c_str());
+            latex_bxslip->DrawLatex(0.88, 0.2, ("Channel " + std::to_string(ch)).c_str());
+            auto now = std::chrono::system_clock::now();
+            std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+            char date_str[100];
+            std::strftime(date_str, sizeof(date_str), "%d-%m-%Y", std::localtime(&now_c));
+            latex_bxslip->DrawLatex(0.88, 0.15, date_str);
+            
+            
+            canvas_bx_slip_example->SaveAs((out_pdf + "_chn299.pdf").c_str());
+            canvas_bx_slip_example->Close();
+        }
     }
 
     // if the channel is not in the mapping, set the optimal bx slip to average of the half

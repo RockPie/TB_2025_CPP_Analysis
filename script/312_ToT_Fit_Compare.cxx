@@ -237,6 +237,8 @@ int main(int argc, char **argv) {
     std::vector<double> list_param_cb_fit_resolution_err;
     std::vector<double> list_param_cb_fit_effective_resolution_err;
 
+    std::vector<TH1D*> hist_input_tot_sums;
+
     auto getParam = [](TDirectory* dir, const char* name, bool required = true) -> double {
         TParameter<double>* p = nullptr;
     #if ROOT_VERSION_CODE >= ROOT_VERSION(6,22,0)
@@ -271,7 +273,7 @@ int main(int argc, char **argv) {
 
     std::vector<std::vector<double>> example_value_matrix(run_files.size());
 
-    double example_tot_adc_slope = 1.8;
+    double example_tot_adc_slope = 2.3;
     double example_tot_adc_offset = 900.0 - example_tot_adc_slope * 512.0;
     spdlog::info("Example TOT ADC Slope: {}, Offset: {}", example_tot_adc_slope, example_tot_adc_offset);
 
@@ -284,6 +286,21 @@ int main(int argc, char **argv) {
             spdlog::error("Failed to open input file {}", run_file);
             if (input_root) { input_root->Close(); delete input_root; }
             continue; // 或者 return 1; 视你整体流程而定
+        }
+
+        // TCanvas tot_sum_distribution_canvas("tot_sum_distribution_canvas", "ToT Sum Distribution Canvas", 800, 600);
+        // find the TCanvas
+        auto tot_sum_distribution_canvas_ptr = dynamic_cast<TCanvas*>(input_root->Get("tot_sum_distribution_canvas"));
+        if (tot_sum_distribution_canvas_ptr) {
+            TH1D* h1_tot_sum_distribution = dynamic_cast<TH1D*>(tot_sum_distribution_canvas_ptr->GetPrimitive("h1_tot_sum_distribution"));
+            if (h1_tot_sum_distribution) {
+                h1_tot_sum_distribution->SetDirectory(nullptr); // Detach from file
+                hist_input_tot_sums.push_back( h1_tot_sum_distribution );
+                spdlog::info("Successfully read histogram 'h1_tot_sum_distribution' from canvas in file {}", run_file);
+            } else {
+                spdlog::error("Failed to get histogram 'h1_tot_sum_distribution' from canvas in file {}", run_file);
+                continue; // 或者 return 1;
+            }
         }
 
         TTree* input_tree = input_root->Get<TTree>("tot_tree");
@@ -519,6 +536,77 @@ int main(int argc, char **argv) {
     canvas_linearity->Write();
     canvas_linearity->Close();
 
+    // ! === draw raw ToT sum comparison ====================
+    TCanvas* canvas_tot_sum_comparison = new TCanvas("canvas_tot_sum_comparison", "Raw ToT Sum Comparison", 800, 600);
+    double tot_sum_90pct_max = 0.0;
+    for (const auto& hist : hist_input_tot_sums) {
+        double current_90pct_max = 0;
+        int n_bins = hist->GetNbinsX();
+        double total_entries = hist->GetEntries();
+        double cumulative_entries = 0.0;
+        for (int bin = 1; bin <= n_bins; ++bin) {
+            cumulative_entries += hist->GetBinContent(bin);
+            if (cumulative_entries >= 0.9 * total_entries) {
+                current_90pct_max = hist->GetBinCenter(bin);
+                break;
+            }
+        }
+        if (current_90pct_max > tot_sum_90pct_max) {
+            tot_sum_90pct_max = current_90pct_max;
+        }
+    }
+    // reset the binning
+    double tot_sum_y_max = 0.0;
+    for (auto & hist : hist_input_tot_sums) {
+        hist->GetXaxis()->SetRangeUser(0.0, tot_sum_90pct_max * 1.3);
+        // normalize
+        hist->Scale(1.0 / hist->Integral());
+        if (hist->GetMaximum() > tot_sum_y_max) {
+            tot_sum_y_max = hist->GetMaximum();
+        }
+    }
+    // set y axis max
+    tot_sum_y_max *= 1.2;
+    for (auto & hist : hist_input_tot_sums) {
+        hist->GetYaxis()->SetRangeUser(0.0, tot_sum_y_max);
+    }
+    // draw all histograms
+    for (size_t i = 0; i < hist_input_tot_sums.size(); ++i) {
+        auto & hist = hist_input_tot_sums[i];
+        hist->SetLineColor(color_list[i % color_list.size()]);
+        hist->GetYaxis()->SetTitle("Normalized Entries");
+        if (i == 0) {
+            format_1d_hist_canvas(canvas_tot_sum_comparison, hist,
+                                color_list[0],annotation_canvas_title,
+                                annotation_testbeam_title, "ToT Sum Distributions");
+        } else {
+            hist->Draw("HIST SAME");
+        }
+    }
+    // legend at top right
+    TLegend* legend_tot_sum = new TLegend(0.75, 0.55, 0.90, 0.89);
+    legend_tot_sum->SetBorderSize(0);
+    legend_tot_sum->SetFillStyle(0);
+    legend_tot_sum->SetTextSize(legend_text_size);
+    for (size_t i = 0; i < hist_input_tot_sums.size(); ++i) {
+        std::string label;
+        if (found_run_energies) {
+            label = fmt::format("{} GeV", run_energies[i]);
+        } else if (i < run_labels.size()) {
+            label = run_labels[i];
+        } else {
+            label = fmt::format("Run {}", run_numbers[i]);
+        }
+        legend_tot_sum->AddEntry(hist_input_tot_sums[i], label.c_str(), "l");
+    }
+    legend_tot_sum->Draw("SAME");
+
+    canvas_tot_sum_comparison->Modified();
+    canvas_tot_sum_comparison->Update();
+    canvas_tot_sum_comparison->Print(out_pdf.c_str());
+    canvas_tot_sum_comparison->Write();
+    canvas_tot_sum_comparison->Close();
+
     // ! === calculate and draw non-linearity ====================
     TCanvas* canvas_nonlinearity = new TCanvas("canvas_nonlinearity", "Non-Linearity vs Beam Energy", 800, 300);
     canvas_nonlinearity->SetLeftMargin(0.15);
@@ -564,25 +652,6 @@ int main(int argc, char **argv) {
     line_zero->SetLineStyle(2);
     line_zero->SetLineColor(kBlack);
     line_zero->Draw("SAME");
-
-    // legend
-    // TLegend* legend_nonlinearity = new TLegend(0.55, 0.65, 0.90, 0.89);
-    // legend_nonlinearity->SetBorderSize(0);
-    // legend_nonlinearity->SetFillStyle(0);
-    // legend_nonlinearity->SetTextSize(legend_text_size*2.0);
-    // legend_nonlinearity->AddEntry(graph_nonlinearity_gaus, "Gaussian Fit Mean", "lp");
-    // legend_nonlinearity->AddEntry(graph_nonlinearity_cb, "Crystal Ball Fit Mean", "lp");
-    // legend_nonlinearity->Draw();
-
-    // latex_linearity.DrawLatex(latex_x_start, latex_y_start, annotation_canvas_title.c_str());
-    // latex_linearity.SetTextSize(0.035);
-    // latex_linearity.SetTextFont(42);
-    // latex_linearity.DrawLatex(latex_x_start, latex_y_start - latex_y_step, annotation_testbeam_title.c_str());
-    // latex_linearity.DrawLatex(latex_x_start, latex_y_start - 2 * latex_y_step, config_description.c_str());
-    // // write date
-    // if (std::strftime(date_str, sizeof(date_str), "%d-%m-%Y ", std::localtime(&now_c))) {
-    //     latex_linearity.DrawLatex(latex_x_start, latex_y_start - 3 * latex_y_step, date_str);
-    // }   
 
     canvas_nonlinearity->Print(out_pdf.c_str());
     canvas_nonlinearity->Write();

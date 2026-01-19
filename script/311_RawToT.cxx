@@ -38,9 +38,6 @@ struct MeanRMS90 {
     int    Neff;        // effective events inside the 90% window
 };
 
-// 如果 TH1 是“计数直方图”：useBinWidth=false（默认）；
-// 若 TH1 是“密度直方图”（bin 已除以宽度），可把 useBinWidth=true 用于取均值/RMS，
-// 但此时请用 nEventsOverride 指定总事件数，否则统计误差近似将不可靠。
 MeanRMS90 computeMeanRMS90(const TH1* h, 
                            double frac = 0.90, 
                            bool useBinWidth = false,
@@ -441,9 +438,12 @@ int main(int argc, char **argv) {
                     h1_adc_peak_position->Fill(adc_peak_index);
                 } // end of sample loop
                 // calculate the pedestal
-                double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
-                if (adc_peak_value_pede_sub > 0) {
+                // ! now only fill with not saturated peak values
+                if (adc_peak_value_pede_sub > 0 && (adc_peak_ranged_value < 950) || tot_first_value == 0) {
+                // if (adc_peak_value_pede_sub > 0) {
                     h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
                     adc_sum += adc_peak_value_pede_sub;
                 }
@@ -570,7 +570,12 @@ int main(int argc, char **argv) {
     std::sort(sorted_tot_sum_list.begin(), sorted_tot_sum_list.end());
     double adc_sum_90pct_max = sorted_tot_sum_list[static_cast<size_t>(0.9 * sorted_tot_sum_list.size()) - 1];
     // create histogram and fill
-    TH1D* h1_tot_sum_distribution = new TH1D("h1_tot_sum_distribution", "ToT Sum Distribution;ToT Sum;Counts", 256, 0, adc_sum_90pct_max*1.8);
+    double x_min = 0.0;
+    double x_max = adc_sum_90pct_max * 2.5;
+    const double bin_width = 450.0;
+    int n_bins = static_cast<int>((x_max - x_min) / bin_width);
+    if (n_bins < 100) n_bins = 100;
+    TH1D* h1_tot_sum_distribution = new TH1D("h1_tot_sum_distribution", "ToT Sum Distribution;ToT Sum;Counts", n_bins, x_min, x_max);
     for (const auto& adc_sum_value : tot_sum_list) {
         h1_tot_sum_distribution->Fill(adc_sum_value);
     }

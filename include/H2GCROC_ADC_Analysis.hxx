@@ -191,7 +191,7 @@ inline void draw_on_pad(TPad* pad, TObject* obj, TObject* fit_obj, bool minimali
     }
 }
 
-inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info) {
+inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info, bool not_preliminary=false) {
     canvas->cd();
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
@@ -205,7 +205,7 @@ inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_c
     hist->SetMaximum(y_max * 1.3);
     hist->SetStats(kFALSE);
     hist->SetTitle("");
-    hist->Draw();
+    hist->Draw("HIST");
     TLatex latex;
     const double text_x = 0.12;
     const double text_y_start = 0.85;
@@ -218,12 +218,19 @@ inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_c
     latex.SetTextFont(42);
     latex.DrawLatex(text_x, text_y_start - text_y_step, testbeam_title.c_str());
     latex.DrawLatex(text_x, text_y_start - 2 * text_y_step, canvas_info.c_str());
+
     // write date
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     char date_buffer[100];
     std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
     latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    if (!not_preliminary) {
+        latex.SetTextSize(0.04);
+        latex.SetTextColor(kGray+2);
+        latex.SetTextFont(72);
+        latex.DrawLatex(text_x, text_y_start - 4 * text_y_step, "Preliminary");
+    }
     canvas->Modified();
     canvas->Update();
 }
@@ -303,10 +310,18 @@ inline void format_1i_hist_canvas(TCanvas* canvas, TH1I* hist, const int& line_c
     canvas->Update();
 }
 
-inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info, bool logz=true) {
+inline void format_2d_hist_canvas(TCanvas* canvas,
+                                  TH2D* hist,
+                                  const int& line_color,
+                                  const std::string& canvas_title,
+                                  const std::string& testbeam_title,
+                                  const std::string& canvas_info,
+                                  bool logz=true,
+                                  bool not_preliminary=false,
+                                  bool show_palette=true) {
     canvas->cd();
-    // increase right margin for color palette
-    canvas->SetRightMargin(0.15);
+    // increase right margin only when the palette is shown
+    canvas->SetRightMargin(show_palette ? 0.15 : 0.05);
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
     hist->GetXaxis()->SetTitleSize(0.05);
@@ -317,7 +332,7 @@ inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_c
     hist->GetYaxis()->SetTitleOffset(1.0);
     hist->SetStats(kFALSE);
     hist->SetTitle("");
-    hist->Draw("COLZ");
+    hist->Draw(show_palette ? "COLZ" : "COL");
 
     TLatex latex;
     const double text_x = 0.12;
@@ -337,6 +352,12 @@ inline void format_2d_hist_canvas(TCanvas* canvas, TH2D* hist, const int& line_c
     char date_buffer[100];
     std::strftime(date_buffer, sizeof(date_buffer), "%d-%m-%Y", &tm);
     latex.DrawLatex(text_x, text_y_start - 3 * text_y_step, date_buffer);
+    if (!not_preliminary) {
+        latex.SetTextSize(0.04);
+        latex.SetTextColor(kGray+2);
+        latex.SetTextFont(72);
+        latex.DrawLatex(text_x, text_y_start - 4 * text_y_step, "Preliminary");
+    }
     // logz
     if (logz)
         canvas->SetLogz(1);

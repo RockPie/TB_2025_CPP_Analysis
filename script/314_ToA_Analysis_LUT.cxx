@@ -516,7 +516,8 @@ int main(int argc, char **argv) {
                 seed_channel_toa_code = toa_value;
             }
         }
-        double seed_channel_pedestal = pedestal_median_of_first3(seed_channel_pedestal_samples);
+        // double seed_channel_pedestal = pedestal_median_of_first3(seed_channel_pedestal_samples);
+        double seed_channel_pedestal = pedestal_average_of_first3(seed_channel_pedestal_samples);
         double seed_channel_adc_peak_value_pede_sub = static_cast<double>(seed_channel_adc_peak_value) - seed_channel_pedestal;
         if (seed_channel_toa_sample_index != -1) {
             // * --- DNL correction ---
@@ -602,7 +603,8 @@ int main(int argc, char **argv) {
                         tot_showup_times++;
                     }
                 } // end of sample loop
-                double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 adc_sum += adc_peak_value_pede_sub;
 
@@ -637,10 +639,10 @@ int main(int argc, char **argv) {
                     toa_ns -= timewalk_correction_ns;
                     // * --- channel offset correction ---
                     auto valid_aligner_channel_index = from_total_channel_to_valid_channel(channel + vldb_id * FPGA_CHANNEL_NUMBER);
-                    if (valid_aligner_channel_index >= 0){
-                        double channel_toa_offset = toa_offset_map[valid_aligner_channel_index];
-                        toa_ns -= channel_toa_offset;
-                    }
+                    // if (valid_aligner_channel_index >= 0){
+                    //     double channel_toa_offset = toa_offset_map[valid_aligner_channel_index];
+                    //     toa_ns -= channel_toa_offset;
+                    // }
 
                     h1d_raw_toa_ns_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_ns);
                     h2d_toa_adc_max_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(adc_peak_value_pede_sub, toa_ns);
@@ -770,6 +772,20 @@ int main(int argc, char **argv) {
     canvas_waveform->Write();
     canvas_waveform->Close();
 
+    // draw the waveform of example channel
+    TCanvas *canvas_example_channel_waveform = new TCanvas("canvas_example_channel_waveform", "Example Channel Waveform", 800, 600);
+    auto example_waveform_hist = h2d_channel_waveform_list[chn_example];
+    example_waveform_hist->GetXaxis()->SetTitle("Relative Time [ns]");
+    example_waveform_hist->GetYaxis()->SetTitle("ADC Value");
+    canvas_example_channel_waveform->cd();
+    format_2d_hist_canvas(canvas_example_channel_waveform, example_waveform_hist, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel " + std::to_string(chn_example) + " Waveform", true, false, false);
+    canvas_example_channel_waveform->Print(out_pdf.c_str());
+    // save a separate pdf file
+    canvas_example_channel_waveform->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_channel_" + std::to_string(chn_example) + "_waveform.pdf").c_str());
+    canvas_example_channel_waveform->Write();
+    canvas_example_channel_waveform->Close();
+    
+
     // only draw if the total entry > 100 to avoid empty histograms
     if (num_single_ToA > 100) {
         TCanvas *canvas_channel_seed_corr = new TCanvas("canvas_channel_seed_corr", "Channel-Seed ToA Correlation", 1200, 800);
@@ -822,6 +838,51 @@ int main(int argc, char **argv) {
     fit_adc_weighted->SetLineColor(kBlue);
     fit_adc_weighted->Draw("SAME");
 
+    // fit with gaussian convolution with a uniform distribution
+    // Define convolution function: Gaussian ⊗ Uniform
+    auto gaus_uniform_conv = [](double *x, double *par) {
+        // par[0] = normalization
+        // par[1] = gaussian mean
+        // par[2] = gaussian sigma
+        // par[3] = uniform half-width (±w around mean)
+        double xx = x[0];
+        double norm = par[0];
+        double mu = par[1];
+        double sigma = par[2];
+        double w = par[3];
+        
+        if (sigma <= 0 || w < 0) return 0.0;
+        
+        double sqrt2 = std::sqrt(2.0);
+        double inv_sqrt2_sigma = 1.0 / (sqrt2 * sigma);
+        
+        // Convolution integral result using error functions
+        double erf_plus = TMath::Erf((xx - mu + w) * inv_sqrt2_sigma);
+        double erf_minus = TMath::Erf((xx - mu - w) * inv_sqrt2_sigma);
+        
+        return norm * (erf_plus - erf_minus) / (2.0 * w);
+    };
+
+    TF1 *fit_gaus_uniform_conv = new TF1("fit_gaus_uniform_conv", gaus_uniform_conv,
+                                          adc_weighted_fit_mean - 3.0 * adc_weighted_fit_sigma,
+                                          adc_weighted_fit_mean + 3.0 * adc_weighted_fit_sigma, 4);
+    fit_gaus_uniform_conv->SetParameters(
+        h1d_event_adc_weighted_toa->GetMaximum() * adc_weighted_fit_sigma * std::sqrt(2.0 * TMath::Pi()),
+        adc_weighted_fit_mean,
+        adc_weighted_fit_sigma,
+        5.0  // initial uniform half-width in ns
+    );
+    fit_gaus_uniform_conv->SetParNames("Norm", "Mean", "Sigma", "UniformWidth");
+    fit_gaus_uniform_conv->SetParLimits(2, 0.1, 50.0);  // sigma > 0
+    fit_gaus_uniform_conv->SetParLimits(3, 0.0, 50.0);  // width >= 0
+    fit_gaus_uniform_conv->SetLineColor(kMagenta);
+    h1d_event_adc_weighted_toa->Fit(fit_gaus_uniform_conv, "RQ+");
+    fit_gaus_uniform_conv->Draw("SAME");
+
+    double conv_fit_mean = fit_gaus_uniform_conv->GetParameter(1);
+    double conv_fit_sigma = fit_gaus_uniform_conv->GetParameter(2);
+    double conv_fit_width = fit_gaus_uniform_conv->GetParameter(3);
+
     h1d_event_leading_toa->SetLineColor(kRed);
     h1d_event_leading_toa->Draw("SAME");
     double leading_pre_fit_min = h1d_event_leading_toa->GetMean() - 2.0 * h1d_event_leading_toa->GetRMS();
@@ -842,6 +903,7 @@ int main(int argc, char **argv) {
     legend_event_toa->AddEntry(fit_adc_weighted, Form("Fit: #mu=%.2f ns, #sigma=%.2f ns", adc_weighted_fit_mean, adc_weighted_fit_sigma), "l");
     legend_event_toa->AddEntry(h1d_event_leading_toa, "Leading ToA", "l");
     legend_event_toa->AddEntry(fit_leading, Form("Fit: #mu=%.2f ns, #sigma=%.2f ns", leading_fit_mean, leading_fit_sigma), "l");
+    legend_event_toa->AddEntry(fit_gaus_uniform_conv, Form("Conv Fit: #mu=%.2f ns, #sigma=%.2f ns, Width=%.2f ns", conv_fit_mean, conv_fit_sigma, conv_fit_width), "l");
     legend_event_toa->Draw();
     canvas_event_toa->Print(out_pdf.c_str());
     canvas_event_toa->Write();
@@ -868,9 +930,14 @@ int main(int argc, char **argv) {
         h1d_event_raw_adc->Fill(event_adc_list[i]);
         if (event_adc_toa_on_list[i] > 0.0)
             h1d_event_adc_toa_on->Fill(event_adc_toa_on_list[i]);
-        if (event_leading_toa_list[i] >= leading_fit_mean - 12.5 && event_leading_toa_list[i] <= leading_fit_mean + 12.5)
+        // if (event_leading_toa_list[i] >= leading_fit_mean - 12.5 && event_leading_toa_list[i] <= leading_fit_mean + 12.5)
+        //     h1d_event_adc_25ns_central_window->Fill(event_adc_list[i]);
+        // if (event_leading_toa_list[i] >= leading_fit_mean - 5.0 && event_leading_toa_list[i] <= leading_fit_mean + 5.0)
+        //     h1d_event_adc_10ns_central_window->Fill(event_adc_list[i]);
+
+        if (event_leading_toa_list[i] >= adc_weighted_fit_mean - 12.5 && event_leading_toa_list[i] <= adc_weighted_fit_mean + 12.5)
             h1d_event_adc_25ns_central_window->Fill(event_adc_list[i]);
-        if (event_leading_toa_list[i] >= leading_fit_mean - 5.0 && event_leading_toa_list[i] <= leading_fit_mean + 5.0)
+        if (event_leading_toa_list[i] >= adc_weighted_fit_mean - 5.0 && event_leading_toa_list[i] <= adc_weighted_fit_mean + 5.0)
             h1d_event_adc_10ns_central_window->Fill(event_adc_list[i]);
     }
     // normalize to number of events
@@ -882,9 +949,12 @@ int main(int argc, char **argv) {
     double max_y_adc_toa_on = h1d_event_adc_toa_on->GetMaximum();
     double max_y_adc = std::max(max_y_raw_adc, max_y_adc_toa_on);
     h1d_event_raw_adc->SetMaximum(max_y_adc * 1.3);
+    // reduce the x tick number
+    gStyle->SetNdivisions(505, "X");
+    h1d_event_raw_adc->GetXaxis()->SetNdivisions(505);
     format_1d_hist_canvas(canvas_adc_sum_comparison, h1d_event_raw_adc, kBlue, annotation_canvas_title, annotation_testbeam_title, "Event Raw ADC Sum");
-    h1d_event_adc_toa_on->SetLineColor(kRed);
-    h1d_event_adc_toa_on->Draw("SAME");
+    // h1d_event_adc_toa_on->SetLineColor(kRed);
+    // h1d_event_adc_toa_on->Draw("SAME");
     h1d_event_adc_25ns_central_window->SetLineColor(kGreen);
     h1d_event_adc_25ns_central_window->Draw("SAME");
     h1d_event_adc_10ns_central_window->SetLineColor(kMagenta);
@@ -908,7 +978,7 @@ int main(int argc, char **argv) {
     double adc_toa_on_fit_sigma_err_syst = 0.0;
     double adc_toa_on_fit_resolution = 0.0;
     double adc_toa_on_fit_resolution_err = 0.0;
-    crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_adc_toa_on, fit_range_sigmas, fit_range_offsets, kRed, adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst, adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst, adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err);
+    // crystalball_fit_th1d(*canvas_adc_sum_comparison, *h1d_event_adc_toa_on, fit_range_sigmas, fit_range_offsets, kRed, adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst, adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst, adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err);
 
     double adc_25ns_fit_mean = 0.0;
     double adc_25ns_fit_mean_err_stat = 0.0;
@@ -938,10 +1008,10 @@ int main(int argc, char **argv) {
     legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", raw_adc_fit_mean, raw_adc_fit_mean_err_stat, raw_adc_fit_mean_err_syst), "l");
     legend_adc_sum->AddEntry(h1d_event_raw_adc, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", raw_adc_fit_sigma, raw_adc_fit_sigma_err_stat, raw_adc_fit_sigma_err_syst), "l");
 
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("ADC Sum (ToA on) (N=%.0f)", h1d_event_adc_toa_on->GetEntries()), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Resolution: %.2f%% #pm %.2f%%", adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst), "l");
-    legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst), "l");
+    // legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("ADC Sum (ToA on) (N=%.0f)", h1d_event_adc_toa_on->GetEntries()), "l");
+    // legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Resolution: %.2f%% #pm %.2f%%", adc_toa_on_fit_resolution, adc_toa_on_fit_resolution_err), "l");
+    // legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Mean: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_mean, adc_toa_on_fit_mean_err_stat, adc_toa_on_fit_mean_err_syst), "l");
+    // legend_adc_sum->AddEntry(h1d_event_adc_toa_on, Form("Sigma: %.2f #pm %.2f (stat) #pm %.2f (syst)", adc_toa_on_fit_sigma, adc_toa_on_fit_sigma_err_stat, adc_toa_on_fit_sigma_err_syst), "l");
 
 
     legend_adc_sum->AddEntry(h1d_event_adc_25ns_central_window, Form("ADC Sum (25 ns window) (N=%.0f)", h1d_event_adc_25ns_central_window->GetEntries()), "l");
@@ -1011,7 +1081,6 @@ int main(int argc, char **argv) {
         delete canvas_event_adc;
         delete canvas_event_toa;
     }
-
     // draw dummy page to close the pdf
     TCanvas *canvas_dummy = new TCanvas("canvas_dummy", "Dummy Canvas", 800, 600);
     canvas_dummy->Print((out_pdf + "]").c_str());

@@ -1,9 +1,18 @@
 #include <fstream>
 #include <string>
+#include <sstream>
+#include <iomanip>
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
 #include "TRandom3.h"
+
+static std::string format_decimal(double value, int precision = 2)
+{
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(precision) << value;
+    return oss.str();
+}
 
 double quantile_from_tf1(TF1* f, double q, double xmin, double xmax)
 {
@@ -165,6 +174,8 @@ int main(int argc, char **argv) {
     script_name = script_name.substr(script_name.find_last_of("/\\") + 1).substr(0, script_name.find_last_of("."));
 
     configure_logger(false);
+
+    const int example_channel = 299; // channel to show waveform example
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
@@ -404,7 +415,8 @@ int main(int argc, char **argv) {
                     h1_adc_peak_position->Fill(adc_peak_index);
                 } // end of sample loop
                 // calculate the pedestal
-                double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 if (adc_peak_value_pede_sub > 0) {
                     h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
@@ -464,6 +476,19 @@ int main(int argc, char **argv) {
     adc_waveform_canvas.Write();
     adc_waveform_canvas.Close();
 
+    auto example_waveform_hist = h2_adc_waveforms[example_channel];
+    TCanvas example_waveform_canvas("example_waveform_canvas", "Example Waveform Canvas", 800, 600);
+    example_waveform_hist->GetXaxis()->SetTitle("Sample Index");
+    example_waveform_hist->GetYaxis()->SetTitle("ADC Value");
+
+    std::string example_canvas_info = "Channel " + std::to_string(example_channel) + " Raw Waveform";
+    format_2d_hist_canvas(&example_waveform_canvas, example_waveform_hist, kBlue+2, annotation_canvas_title, annotation_testbeam_title, example_canvas_info, true, false, false);
+    example_waveform_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    example_waveform_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_example_waveform.pdf").c_str());
+    example_waveform_canvas.Write();
+    example_waveform_canvas.Close();
+
     TCanvas adc_peak_position_canvas("adc_peak_position_canvas", "ADC Peak Position Canvas", 800, 600);
     std::string canvas_info = "ADC Peak Position Distribution";
     format_1d_hist_canvas(&adc_peak_position_canvas, h1_adc_peak_position, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
@@ -487,7 +512,12 @@ int main(int argc, char **argv) {
     std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
     double adc_sum_90pct_max = sorted_adc_sum_list[static_cast<size_t>(0.9 * sorted_adc_sum_list.size()) - 1];
     // create histogram and fill
-    TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", 256, 0, adc_sum_90pct_max*1.8);
+    double x_hist_max = adc_sum_90pct_max * 1.8;
+    double x_hist_min = 0.0;
+    const double bin_width = 300.0;
+    int n_bins = static_cast<int>((x_hist_max - x_hist_min) / bin_width);
+    if (n_bins < 100) n_bins = 100; // at least 100 bins
+    TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", n_bins, x_hist_min, x_hist_max);
     for (const auto& adc_sum_value : adc_sum_list) {
         h1_adc_sum_distribution->Fill(adc_sum_value);
     }
@@ -505,10 +535,8 @@ int main(int argc, char **argv) {
     pave_stats->SetTextSize(0.03);
     pave_stats->SetTextColor(kBlue+2);
     pave_stats->AddText(("Entries: " + std::to_string(static_cast<int>(adc_sum_entry))).c_str());
-    // only keep two decimal points for mean
-    pave_stats->AddText(("Mean: " + std::to_string(static_cast<int>(adc_sum_mean * 100)) .insert(std::to_string(static_cast<int>(adc_sum_mean * 100)).length() - 2, ".")).c_str());
-    // only keep two decimal points for rms
-    pave_stats->AddText(("RMS: " + std::to_string(static_cast<int>(adc_sum_rms * 100)) .insert(std::to_string(static_cast<int>(adc_sum_rms * 100)).length() - 2, ".")).c_str());
+    pave_stats->AddText(("Mean: " + format_decimal(adc_sum_mean)).c_str());
+    pave_stats->AddText(("RMS: " + format_decimal(adc_sum_rms)).c_str());
     pave_stats->Draw();
 
     adc_sum_distribution_canvas.Print(out_pdf.c_str());
@@ -571,9 +599,9 @@ int main(int argc, char **argv) {
     pave_stats_pre->SetTextSize(0.03);
     pave_stats_pre->SetTextColor(kRed);
     pave_stats_pre->AddText("Pre-Fit:");
-    pave_stats_pre->AddText(("  Mean: " + std::to_string(static_cast<int>(pre_fit_mean * 100)) .insert(std::to_string(static_cast<int>(pre_fit_mean * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre->AddText(("  Sigma: " + std::to_string(static_cast<int>(pre_fit_sigma * 100)) .insert(std::to_string(static_cast<int>(pre_fit_sigma * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre->AddText(("  Chi2/NDF: " + std::to_string(static_cast<int>(pre_fit_chi2 * 100)) .insert(std::to_string(static_cast<int>(pre_fit_chi2 * 100)).length() - 2, ".") + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
+    pave_stats_pre->AddText(("  Mean: " + format_decimal(pre_fit_mean)).c_str());
+    pave_stats_pre->AddText(("  Sigma: " + format_decimal(pre_fit_sigma)).c_str());
+    pave_stats_pre->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
     pave_stats_pre->Draw();
 
     TPaveText *pave_stats_pre_2 = new TPaveText(0.55,0.58,0.90,0.73,"NDC");
@@ -584,9 +612,9 @@ int main(int argc, char **argv) {
     pave_stats_pre_2->SetTextSize(0.03);
     pave_stats_pre_2->SetTextColor(kGreen+2);
     pave_stats_pre_2->AddText("Pre-Fit 2:");
-    pave_stats_pre_2->AddText(("  Mean: " + std::to_string(static_cast<int>(pre_fit_2_mean * 100)) .insert(std::to_string(static_cast<int>(pre_fit_2_mean * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre_2->AddText(("  Sigma: " + std::to_string(static_cast<int>(pre_fit_2_sigma * 100)) .insert(std::to_string(static_cast<int>(pre_fit_2_sigma * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre_2->AddText(("  Chi2/NDF: " + std::to_string(static_cast<int>(pre_fit_2_chi2 * 100 + 0.5) / 100.0).substr(0, std::to_string(static_cast<int>(pre_fit_2_chi2 * 100 + 0.5) / 100.0).find('.') + 3) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
+    pave_stats_pre_2->AddText(("  Mean: " + format_decimal(pre_fit_2_mean)).c_str());
+    pave_stats_pre_2->AddText(("  Sigma: " + format_decimal(pre_fit_2_sigma)).c_str());
+    pave_stats_pre_2->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_2_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
     pave_stats_pre_2->Draw();
 
     adc_sum_distribution_fitted_canvas.Modified();
@@ -687,21 +715,12 @@ int main(int argc, char **argv) {
     pave_stats_gausfit->SetTextColor(kCyan+2);
     pave_stats_gausfit->AddText("Gaussian Fit Results:");
     
-    auto format_to_2_decimals = [](double value) -> std::string {
-        if (value == 0.0) {
-            return "0.00";
-        }
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(2) << value;
-        return oss.str();
-    };
-    
-    std::string mean_str = format_to_2_decimals(mean_avg);
-    std::string mean_err_stat_str = format_to_2_decimals(mean_err_stat);
-    std::string mean_err_sys_str = format_to_2_decimals(mean_err_sys);
-    std::string sigma_str = format_to_2_decimals(sigma_avg);
-    std::string sigma_err_stat_str = format_to_2_decimals(sigma_err_stat);
-    std::string sigma_err_sys_str = format_to_2_decimals(sigma_err_sys);
+    std::string mean_str = format_decimal(mean_avg);
+    std::string mean_err_stat_str = format_decimal(mean_err_stat);
+    std::string mean_err_sys_str = format_decimal(mean_err_sys);
+    std::string sigma_str = format_decimal(sigma_avg);
+    std::string sigma_err_stat_str = format_decimal(sigma_err_stat);
+    std::string sigma_err_sys_str = format_decimal(sigma_err_sys);
     
     std::string mean_text = "  Mean: " + mean_str + " #pm " + mean_err_stat_str + " (stat)";
     pave_stats_gausfit->AddText(mean_text.c_str());
@@ -713,8 +732,8 @@ int main(int argc, char **argv) {
     std::string sigma_sys_text = "         #pm " + sigma_err_sys_str + " (sys)";
     pave_stats_gausfit->AddText(sigma_sys_text.c_str());
 
-    std::string resolution_str = format_to_2_decimals(resolution);
-    std::string resolution_err_str = format_to_2_decimals(resolution_err);
+    std::string resolution_str = format_decimal(resolution);
+    std::string resolution_err_str = format_decimal(resolution_err);
     std::string resolution_text = "  Resolution: " + resolution_str + " % #pm " + resolution_err_str + " %";
     pave_stats_gausfit->AddText(resolution_text.c_str());
     pave_stats_gausfit->Draw();
@@ -870,12 +889,12 @@ int main(int argc, char **argv) {
     pave_stats_cbfit->SetTextSize(0.03);
     pave_stats_cbfit->SetTextColor(kMagenta+2);
     pave_stats_cbfit->AddText("Crystal Ball Fit Results:");
-    std::string cb_mean_str = format_to_2_decimals(cb_mean_avg);
-    std::string cb_mean_err_stat_str = format_to_2_decimals(cb_mean_err_stat);
-    std::string cb_mean_err_sys_str = format_to_2_decimals(cb_mean_err_sys);
-    std::string cb_sigma_str = format_to_2_decimals(cb_sigma_avg);
-    std::string cb_sigma_err_stat_str = format_to_2_decimals(cb_sigma_err_stat);
-    std::string cb_sigma_err_sys_str = format_to_2_decimals(cb_sigma_err_sys);
+    std::string cb_mean_str = format_decimal(cb_mean_avg);
+    std::string cb_mean_err_stat_str = format_decimal(cb_mean_err_stat);
+    std::string cb_mean_err_sys_str = format_decimal(cb_mean_err_sys);
+    std::string cb_sigma_str = format_decimal(cb_sigma_avg);
+    std::string cb_sigma_err_stat_str = format_decimal(cb_sigma_err_stat);
+    std::string cb_sigma_err_sys_str = format_decimal(cb_sigma_err_sys);
     std::string cb_mean_text = "  Mean: " + cb_mean_str + " #pm " + cb_mean_err_stat_str + " (stat)";
     pave_stats_cbfit->AddText(cb_mean_text.c_str());
     std::string cb_mean_sys_text = "        #pm " + cb_mean_err_sys_str + " (sys)";
@@ -884,16 +903,16 @@ int main(int argc, char **argv) {
     pave_stats_cbfit->AddText(cb_sigma_text.c_str());
     std::string cb_sigma_sys_text = "         #pm " + cb_sigma_err_sys_str + " (sys)";
     pave_stats_cbfit->AddText(cb_sigma_sys_text.c_str());
-    std::string cb_resolution_str = format_to_2_decimals(cb_resolution);
-    std::string cb_resolution_err_str = format_to_2_decimals(cb_resolution_err);
+    std::string cb_resolution_str = format_decimal(cb_resolution);
+    std::string cb_resolution_err_str = format_decimal(cb_resolution_err);
     std::string cb_resolution_text = "  Core Resolution: " + cb_resolution_str + " % #pm " + cb_resolution_err_str + " %";
     pave_stats_cbfit->AddText(cb_resolution_text.c_str());
-    std::string cb_effective_sigma_str = format_to_2_decimals(cb_effective_sigma_avg);
-    std::string cb_effective_sigma_err_stat_str = format_to_2_decimals(cb_effective_sigma_err_stat);
-    std::string cb_effective_sigma_err_sys_str = format_to_2_decimals(cb_effective_sigma_err_sys);
+    std::string cb_effective_sigma_str = format_decimal(cb_effective_sigma_avg);
+    std::string cb_effective_sigma_err_stat_str = format_decimal(cb_effective_sigma_err_stat);
+    std::string cb_effective_sigma_err_sys_str = format_decimal(cb_effective_sigma_err_sys);
     std::string cb_effective_sigma_text = "  Eff Sigma: " + cb_effective_sigma_str;
     pave_stats_cbfit->AddText(cb_effective_sigma_text.c_str());
-    std::string cb_effective_resolution_str = format_to_2_decimals(cb_effective_resolution);
+    std::string cb_effective_resolution_str = format_decimal(cb_effective_resolution);
     std::string cb_effective_resolution_text = "  Eff Resolution: " + cb_effective_resolution_str + " %";
     pave_stats_cbfit->AddText(cb_effective_resolution_text.c_str());
     pave_stats_cbfit->Draw();
@@ -901,6 +920,8 @@ int main(int argc, char **argv) {
     adc_sum_distribution_cbfit_canvas.Modified();
     adc_sum_distribution_cbfit_canvas.Update();
     adc_sum_distribution_cbfit_canvas.Print(out_pdf.c_str());
+    std::string cbfit_pic_file_name = script_output_file.substr(0, script_output_file.find_last_of(".")) + "_cbfit.pdf";
+    adc_sum_distribution_cbfit_canvas.SaveAs(cbfit_pic_file_name.c_str());
     adc_sum_distribution_cbfit_canvas.Write();
     adc_sum_distribution_cbfit_canvas.Close();
 

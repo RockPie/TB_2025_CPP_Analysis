@@ -225,26 +225,6 @@ int main(int argc, char **argv) {
         }
         input_root->Close();
     }
-    // TParameter<double> param_gaus_fit_mean("gaus_fit_mean", mean_avg); 
-    // TParameter<double> param_gaus_fit_sigma("gaus_fit_sigma", sigma_avg);
-    // TParameter<double> param_gaus_fit_resolution("gaus_fit_resolution", resolution);
-    // TParameter<double> param_gaus_fit_mean_err_stat("gaus_fit_mean_err_stat", mean_err_stat);
-    // TParameter<double> param_gaus_fit_mean_err_sys("gaus_fit_mean_err_sys", mean_err_sys);
-    // TParameter<double> param_gaus_fit_sigma_err_stat("gaus_fit_sigma_err_stat", sigma_err);
-    // TParameter<double> param_gaus_fit_sigma_err_sys("gaus_fit_sigma_err_sys", sigma_err);
-    // TParameter<double> param_gaus_fit_resolution_err("gaus_fit_resolution_err", resolution_err);
-
-    // TParameter<double> param_cb_fit_mean("cb_fit_mean", cb_mean_avg);
-    // TParameter<double> param_cb_fit_sigma("cb_fit_sigma", cb_sigma_avg);
-    // TParameter<double> param_cb_fit_effective_sigma("cb_fit_effective_sigma", cb_effective_sigma_avg);
-    // TParameter<double> param_cb_fit_resolution("cb_fit_resolution", cb_resolution);
-    // TParameter<double> param_cb_fit_mean_err_stat("cb_fit_mean_err_stat", cb_mean_err_stat);
-    // TParameter<double> param_cb_fit_mean_err_sys("cb_fit_mean_err_sys", cb_mean_err_sys);
-    // TParameter<double> param_cb_fit_sigma_err_stat("cb_fit_sigma_err_stat", cb_sigma_err);
-    // TParameter<double> param_cb_fit_sigma_err_sys("cb_fit_sigma_err_sys", cb_sigma_err);
-    // TParameter<double> param_cb_fit_effective_sigma_err_stat("cb_fit_effective_sigma_err_stat", cb_effective_sigma_err_stat);
-    // TParameter<double> param_cb_fit_effective_sigma_err_sys("cb_fit_effective_sigma_err_sys", cb_effective_sigma_err_sys);
-    // TParameter<double> param_cb_fit_resolution_err("cb_fit_resolution_err", cb_resolution_err);
 
     std::vector<double> list_param_gaus_fit_mean;
     std::vector<double> list_param_gaus_fit_sigma;
@@ -268,6 +248,8 @@ int main(int argc, char **argv) {
     std::vector<double> list_param_cb_fit_effective_sigma_err_sys;
     std::vector<double> list_param_cb_fit_resolution_err;
     std::vector<double> list_param_cb_fit_effective_resolution_err;
+
+    std::vector<TH1D*> hist_input_adc_sums;
 
     auto getParam = [](TDirectory* dir, const char* name, bool required = true) -> double {
         TParameter<double>* p = nullptr;
@@ -298,12 +280,31 @@ int main(int argc, char **argv) {
         if (!input_root || input_root->IsZombie()) {
             spdlog::error("Failed to open input file {}", run_file);
             if (input_root) { input_root->Close(); delete input_root; }
-            continue; // 或者 return 1; 视你整体流程而定
+            continue;
         }
 
-        // 如果参数写在子目录里，比如 "Results"；否则就用根目录
-        TDirectory* dir = input_root; 
-        // TDirectory* dir = input_root->GetDirectory("Results"); // 若你写在子目录，请改用这行
+        // TCanvas adc_sum_distribution_canvas("adc_sum_distribution_canvas", "ADC Sum Distribution Canvas", 800, 600);
+        // read the TCanvas from the input file
+        auto adc_sum_distribution_canvas_ptr = dynamic_cast<TCanvas*>(input_root->Get("adc_sum_distribution_canvas"));
+        if (adc_sum_distribution_canvas_ptr) {
+            // TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", 256, 0, adc_sum_90pct_max*1.8);
+            // read the histogram from the canvas
+            TH1D* h1_adc_sum_distribution = dynamic_cast<TH1D*>(adc_sum_distribution_canvas_ptr->GetPrimitive("h1_adc_sum_distribution"));
+            if (h1_adc_sum_distribution) {
+                h1_adc_sum_distribution->SetDirectory(nullptr); // Detach from file
+                hist_input_adc_sums.push_back( h1_adc_sum_distribution );
+                // hist_input_adc_sums.push_back( (TH1D*)h1_adc_sum_distribution->Clone(
+                //     fmt::format("h1_adc_sum_distribution_run{}", run_numbers[_file_index]).c_str()
+                // ) );
+                spdlog::info("Successfully read histogram 'h1_adc_sum_distribution' from canvas in file {}", run_file);
+                // print info of the histogram
+                spdlog::info("  Mean: {:.2f}, RMS: {:.2f}", h1_adc_sum_distribution->GetMean(), h1_adc_sum_distribution->GetRMS());
+            } else {
+                spdlog::error("Failed to get histogram 'h1_adc_sum_distribution' from canvas in file {}", run_file);
+            }
+        }
+
+        TDirectory* dir = input_root;
         if (!dir) {
             spdlog::error("Directory with parameters is missing in file {}", run_file);
             input_root->Close(); delete input_root;
@@ -360,7 +361,7 @@ int main(int argc, char **argv) {
         } catch (const std::exception& e) {
             spdlog::error("While reading parameters from {}: {}", run_file, e.what());
             input_root->Close(); delete input_root;
-            continue; // 或者 return 1;
+            continue;
         }
 
         input_root->Close();
@@ -388,6 +389,7 @@ int main(int argc, char **argv) {
     double axis_label_size = 0.035;
     double legend_text_size = 0.025;
 
+
     // ! === draw beam energy vs gaussian fit mean ====================
     TCanvas* canvas_linearity = new TCanvas("canvas_linearity", "Gaussian Fit Mean vs Beam Energy", 800, 600);
     // leave some margin for legend
@@ -409,7 +411,7 @@ int main(int argc, char **argv) {
     graph_linearity_gaus->SetMarkerStyle(20);
     graph_linearity_gaus->SetMarkerColor(kCyan+2);
     graph_linearity_gaus->SetLineColor(kCyan+2);
-    graph_linearity_gaus->SetTitle(";Beam Energy [GeV];Gaussian Fit Mean [ADC counts]");
+    graph_linearity_gaus->SetTitle(";Beam Energy [GeV];Fit Mean [ADC counts]");
     graph_linearity_gaus->GetXaxis()->SetTitleSize(axis_title_size);
     graph_linearity_gaus->GetYaxis()->SetTitleSize(axis_title_size);
     graph_linearity_gaus->GetXaxis()->SetLabelSize(axis_label_size);
@@ -483,8 +485,99 @@ int main(int argc, char **argv) {
     }
 
     canvas_linearity->Print((out_pdf + "(").c_str());
+    std::string out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic0.pdf";
+    canvas_linearity->SaveAs(out_png.c_str());
     canvas_linearity->Write();
     canvas_linearity->Close();
+
+
+    // ! === draw ADC sum distributions ====================
+    TCanvas* canvas_adc_sum_distribution = new TCanvas("canvas_adc_sum_distribution", "ADC Sum Distributions", 800, 600);
+    double adc_sum_90pct_max = 0.0;
+    for (const auto& hist_adc_sum : hist_input_adc_sums) {
+        double current_90pct_max = 0;
+        // go through the histogram to find the 90% max bin
+        int n_bins = hist_adc_sum->GetNbinsX();
+        double total_counts = hist_adc_sum->Integral();
+        double cumulative_counts = 0.0;
+        for (int bin = 1; bin <= n_bins; ++bin) {
+            cumulative_counts += hist_adc_sum->GetBinContent(bin);
+            if (cumulative_counts >= 0.9 * total_counts) {
+                current_90pct_max = hist_adc_sum->GetBinCenter(bin);
+                break;
+            }
+        }
+        if (current_90pct_max > adc_sum_90pct_max) {
+            adc_sum_90pct_max = current_90pct_max;
+        }
+    }
+    // reset the binning of all histograms
+    double adc_sum_y_max = 0.0;
+    for (auto& hist_adc_sum : hist_input_adc_sums) {
+        // hist_adc_sum->Rebin(2);
+        hist_adc_sum->GetXaxis()->SetRangeUser(0, adc_sum_90pct_max * 1.3);
+        // normalize the histogram
+        double integral = hist_adc_sum->Integral();
+        if (integral > 0) {
+            hist_adc_sum->Scale(1.0 / integral);
+            double current_y_max = hist_adc_sum->GetMaximum();
+            if (current_y_max > adc_sum_y_max) {
+                adc_sum_y_max = current_y_max;
+            }
+        }
+    }
+    // set y axis range
+    for (auto& hist_adc_sum : hist_input_adc_sums) {
+        hist_adc_sum->GetYaxis()->SetRangeUser(0, adc_sum_y_max * 1.2);
+        // set y title
+        hist_adc_sum->GetYaxis()->SetTitle("Normalized Counts");
+    }
+    for (size_t i = 0; i < hist_input_adc_sums.size(); ++i) {
+        TH1D* hist_adc_sum = hist_input_adc_sums[i];
+        hist_adc_sum->SetLineColor( color_list[i % color_list.size()] );
+        // print some info
+        spdlog::info("Drawing ADC sum distribution for run {}", i);
+        spdlog::info("  Mean: {:.2f}, RMS: {:.2f}", hist_adc_sum->GetMean(), hist_adc_sum->GetRMS());
+        spdlog::info("  Entries: {}", hist_adc_sum->GetEntries());
+        // hist_adc_sum->SetTitle(";ADC Sum;Counts");
+        // hist_adc_sum->GetXaxis()->SetTitleSize(axis_title_size);
+        // hist_adc_sum->GetYaxis()->SetTitleSize(axis_title_size);
+        // hist_adc_sum->GetXaxis()->SetLabelSize(axis_label_size);
+        // hist_adc_sum->GetYaxis()->SetLabelSize(axis_label_size);
+        if (i == 0) {
+            format_1d_hist_canvas(canvas_adc_sum_distribution, hist_adc_sum,
+                color_list[i % color_list.size()], annotation_canvas_title, annotation_testbeam_title, "ADC Sum Distributions");
+        } else {
+            hist_adc_sum->Draw("HIST SAME");
+        }
+    }
+
+    // top right legend
+    TLegend* legend_adc_sum = new TLegend(0.75, 0.55, 0.95, 0.89);
+    legend_adc_sum->SetBorderSize(0);
+    legend_adc_sum->SetFillStyle(0);
+    legend_adc_sum->SetTextSize(legend_text_size);
+    for (size_t i = 0; i < hist_input_adc_sums.size(); ++i) {
+        const auto& hist_adc_sum = hist_input_adc_sums[i];
+        std::string label;
+        if (found_run_energies) {
+            label = fmt::format("{} GeV", run_energies[i]);
+        } else {
+            label = run_labels[i];
+        }
+        legend_adc_sum->AddEntry(hist_adc_sum, label.c_str(), "l");
+    }
+    legend_adc_sum->Draw("SAME");   
+
+
+    canvas_adc_sum_distribution->Modified();
+    canvas_adc_sum_distribution->Update();
+    canvas_adc_sum_distribution->Write();
+    canvas_adc_sum_distribution->Print(out_pdf.c_str());
+    // save as a png file
+    out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic1.pdf";
+    canvas_adc_sum_distribution->SaveAs(out_png.c_str());
+    canvas_adc_sum_distribution->Close();
 
     // ! === calculate and draw non-linearity ====================
     TCanvas* canvas_nonlinearity = new TCanvas("canvas_nonlinearity", "Non-Linearity vs Beam Energy", 800, 300);
@@ -552,6 +645,8 @@ int main(int argc, char **argv) {
     // }   
 
     canvas_nonlinearity->Print(out_pdf.c_str());
+    out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic2.pdf";
+    canvas_nonlinearity->SaveAs(out_png.c_str());
     canvas_nonlinearity->Write();
     canvas_nonlinearity->Close();
 
@@ -650,8 +745,107 @@ int main(int argc, char **argv) {
     }
 
     canvas_resolution->Print(out_pdf.c_str());
+    out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic3.pdf";
+    canvas_resolution->SaveAs(out_png.c_str());
     canvas_resolution->Write();
     canvas_resolution->Close();
+
+    // draw resolution compare with previous testbeam results if available
+    TCanvas* canvas_resolution_to_previous = new TCanvas("canvas_resolution_to_previous", "Energy Resolution Comparison", 800, 600);
+    canvas_resolution_to_previous->SetLeftMargin(0.15);
+    canvas_resolution_to_previous->SetBottomMargin(0.10);
+    TGraphErrors* graph_resolution_previous = new TGraphErrors();
+    TGraphErrors* graph_resolution_MC = new TGraphErrors();
+    std::vector<double> mc_energies = {60, 80, 100, 150, 200, 250, 300, 350};
+    std::vector<double> mc_resolutions = {8.75, 7.1, 6.5, 5.9, 5.2, 4.3, 4.9, 5.0}; // in %
+    std::vector<double> mc_resolution_errors = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+    std::vector<double> previous_energies = {60, 80, 100, 150, 200, 250, 300};
+    std::vector<double> previous_resolutions = {0.202903,0.193606,0.180118,0.157828,0.143362,0.135984,0.128683,0.124429};
+    std::vector<double> previous_resolution_errors = {0.0223685347754385,
+                0.0276764080400618,
+                0.0256984028686609,
+                0.0235984254347615,
+                0.016989855708628,
+                0.0151618517338747,
+                0.0109004483394033,
+                0.0102402795860269};
+    for (size_t i = 0; i < mc_energies.size(); ++i) {
+        graph_resolution_MC->SetPoint(i, mc_energies[i], mc_resolutions[i]);
+        graph_resolution_MC->SetPointError(i, mc_energies[i]*0.03, mc_resolution_errors[i]);
+    }
+    for (size_t i = 0; i < previous_energies.size(); ++i) {
+        graph_resolution_previous->SetPoint(i, previous_energies[i], previous_resolutions[i]*100.0); // convert to %
+        graph_resolution_previous->SetPointError(i, previous_energies[i]*0.03, previous_resolution_errors[i]*100.0);
+    }
+    graph_resolution_previous->SetMarkerStyle(25);
+    graph_resolution_previous->SetMarkerColor(kRed);
+    graph_resolution_previous->SetLineColor(kRed);
+    graph_resolution_previous->SetTitle(";Beam Energy [GeV];Energy Resolution [%]");
+    graph_resolution_previous->GetXaxis()->SetTitleSize(axis_title_size);
+    graph_resolution_previous->GetYaxis()->SetTitleSize(axis_title_size);
+    graph_resolution_previous->GetXaxis()->SetLabelSize(axis_label_size);
+    graph_resolution_previous->GetYaxis()->SetLabelSize(axis_label_size);
+    graph_resolution_previous->GetXaxis()->SetLimits(energy_axis_min, energy_axis_max);
+    graph_resolution_previous->GetYaxis()->SetRangeUser(0.0, 40.0);
+    graph_resolution_previous->Draw("AP");
+    // fit with function: sqrt( (a/sqrt(E))^2 + b^2 + (c/E)^2 )
+    TF1* fit_resolution_previous = new TF1("fit_resolution_previous", resolution_func, energy_axis_min, energy_axis_max, 3);
+    double min_resolution_previous = *std::min_element(previous_resolutions.begin(), previous_resolutions.end());
+    fit_resolution_previous->SetParameters(min_resolution_previous, 100.0, 0.0);
+    fit_resolution_previous->SetLineColor(kRed);
+    graph_resolution_previous->Fit(fit_resolution_previous, "RQ");
+    double previous_res_fit_a = fabs(fit_resolution_previous->GetParameter(1)); // stochastic term (already in %)
+    double previous_res_fit_b = fabs(fit_resolution_previous->GetParameter(2)); // noise term (already in %)
+    double previous_res_fit_c = fabs(fit_resolution_previous->GetParameter(0)); // constant term (already in %)
+    fit_resolution_previous->Draw("SAME");
+
+    // then draw only the crystal ball core from this analysis
+    graph_resolution_cb->Draw("P SAME");
+
+    graph_resolution_MC->SetMarkerStyle(24);
+    graph_resolution_MC->SetMarkerColor(kBlue);
+    graph_resolution_MC->SetLineColor(kBlue);
+    graph_resolution_MC->Draw("P SAME");
+    // fit with function: sqrt( (a/sqrt(E))^2 + b^2 + (c/E)^2 )
+    TF1* fit_resolution_MC = new TF1("fit_resolution_MC", resolution_func, energy_axis_min, energy_axis_max, 3);
+    double min_resolution_MC = *std::min_element(mc_resolutions.begin(), mc_resolutions.end());
+    fit_resolution_MC->SetParameters(min_resolution_MC, 100.0, 0.0);
+    fit_resolution_MC->SetLineColor(kBlue);
+    graph_resolution_MC->Fit(fit_resolution_MC, "RQ");
+    double mc_res_fit_a = fabs(fit_resolution_MC->GetParameter(1)); // stochastic term (already in %)
+    double mc_res_fit_b = fabs(fit_resolution_MC->GetParameter(2)); // noise term (already in %)
+    double mc_res_fit_c = fabs(fit_resolution_MC->GetParameter(0)); // constant term (already in %)
+    fit_resolution_MC->Draw("SAME");
+
+    // legend
+    TLegend* legend_resolution_compare = new TLegend(0.55, 0.55, 0.90, 0.89);
+    legend_resolution_compare->SetBorderSize(0);
+    legend_resolution_compare->SetFillStyle(0);
+    legend_resolution_compare->SetTextSize(legend_text_size);
+    legend_resolution_compare->AddEntry(graph_resolution_previous, "FoCal-H Prototype 2", "lp");
+    legend_resolution_compare->AddEntry(graph_resolution_previous, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", previous_res_fit_a, previous_res_fit_b, previous_res_fit_c).c_str(), "l");
+    legend_resolution_compare->AddEntry(graph_resolution_cb, "FoCal-H Prototype 3", "lp");
+    legend_resolution_compare->AddEntry(graph_resolution_cb, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", cb_res_fit_a, cb_res_fit_b, cb_res_fit_c).c_str(), "l");
+    legend_resolution_compare->AddEntry(graph_resolution_MC, "MC for Prototype 3", "lp");
+    legend_resolution_compare->AddEntry(graph_resolution_MC, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", mc_res_fit_a, mc_res_fit_b, mc_res_fit_c).c_str(), "l");
+    legend_resolution_compare->Draw();
+
+    latex_linearity.SetTextSize(0.05);
+    latex_linearity.SetTextFont(62);
+    latex_linearity.DrawLatex(latex_x_start, latex_y_start, annotation_canvas_title.c_str());
+    latex_linearity.SetTextSize(0.035);
+    latex_linearity.SetTextFont(42);
+    latex_linearity.DrawLatex(latex_x_start, latex_y_start - latex_y_step, annotation_testbeam_title.c_str());
+    latex_linearity.DrawLatex(latex_x_start, latex_y_start - 2 * latex_y_step, "Comparison with Previous Results");
+    // write date
+    if (std::strftime(date_str, sizeof(date_str), "%d-%m-%Y ", std::localtime(&now_c))) {
+        latex_linearity.DrawLatex(latex_x_start, latex_y_start - 3 * latex_y_step, date_str);
+    }
+    canvas_resolution_to_previous->Print(out_pdf.c_str());
+    out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic4.pdf";
+    canvas_resolution_to_previous->SaveAs(out_png.c_str());
+    canvas_resolution_to_previous->Write();
+    canvas_resolution_to_previous->Close();
 
 
 
