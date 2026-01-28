@@ -192,6 +192,10 @@ inline void draw_on_pad(TPad* pad, TObject* obj, TObject* fit_obj, bool minimali
 }
 
 inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_color, const std::string& canvas_title, const std::string& testbeam_title, const std::string& canvas_info, bool not_preliminary=false) {
+    if (!canvas || !hist) {
+        return;
+    }
+
     canvas->cd();
     hist->SetLineColor(line_color);
     hist->SetLineWidth(2);
@@ -202,7 +206,11 @@ inline void format_1d_hist_canvas(TCanvas* canvas, TH1D* hist, const int& line_c
     hist->GetXaxis()->SetTitleOffset(0.8);
     hist->GetYaxis()->SetTitleOffset(1.0);
     auto y_max = hist->GetMaximum();
-    hist->SetMaximum(y_max * 1.3);
+    if (y_max <= 0.0) {
+        hist->SetMaximum(1.0);
+    } else {
+        hist->SetMaximum(y_max * 1.3);
+    }
     hist->SetStats(kFALSE);
     hist->SetTitle("");
     hist->Draw("HIST");

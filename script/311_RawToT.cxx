@@ -1,9 +1,292 @@
 #include <fstream>
 #include <string>
+#include <sstream>
+#include <iomanip>
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
 #include "TRandom3.h"
+#include "CommonParams.hxx"
+#include <cmath>
+#include <algorithm>
+#include <limits>
+
+static std::string format_decimal(double value, int precision = 2)
+{
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(precision) << value;
+    return oss.str();
+}
+
+struct HistogramSmoothness {
+    double chi2 = 0.0;
+    int    ndof = 0;
+    double smoothness = 0.0;
+
+    double chi2_d2 = 0.0; int ndof_d2 = 0; double s2 = 0.0;
+    double chi2_d3 = 0.0; int ndof_d3 = 0; double s3 = 0.0;
+    double chi2_d4 = 0.0; int ndof_d4 = 0; double s4 = 0.0;
+};
+
+enum class SmoothTransform {
+    kNone,
+    kAnscombe,   // z = 2*sqrt(y + 3/8)
+    kLog1p       // z = log(1+y)
+};
+
+struct SmoothnessOptions {
+    // Score only within [xmin, xmax]. Use NaN to disable either bound.
+    double xmin = std::numeric_limits<double>::quiet_NaN();
+    double xmax = std::numeric_limits<double>::quiet_NaN();
+
+    // Skip bins with too little information (after transform we still need variance > 0).
+    // For unweighted count hists, this is just content. For weighted, uses (content^2 / err^2) as "effective".
+    double minEffectiveCount = 5.0;
+
+    // Transform to stabilize variance (highly recommended when you're using smoothness-only fitting).
+    SmoothTransform transform = SmoothTransform::kAnscombe;
+
+    // Difference orders to include
+    bool use_d2 = true;
+    bool use_d3 = true;
+    bool use_d4 = true;
+
+    // Combine weights (tune if you want more sensitivity to oscillations)
+    double w2 = 1.0;
+    double w3 = 0.7;
+    double w4 = 0.5;
+
+    // Robust cap on per-term contribution: cap z-score magnitude to avoid single-bin domination.
+    // Set <=0 to disable.
+    double clipSigma = 6.0;
+
+    // Ignore under/overflow
+    bool ignoreUnderOverflow = true;
+};
+
+static inline bool is_finite_pos(double x) { return std::isfinite(x) && x > 0.0; }
+
+static inline double bin_var_raw(const TH1D* h, int bin)
+{
+    // Prefer stored bin errors (Sumw2, weighted histograms, etc.)
+    const double e = h->GetBinError(bin);
+    if (e > 0.0) return e * e;
+
+    // Fallback Poisson for pure counts
+    const double y = h->GetBinContent(bin);
+    return (y > 0.0) ? y : 0.0;
+}
+
+static inline double effective_count(const TH1D* h, int bin)
+{
+    // For pure counts: Neff ~ y
+    // For weighted: Neff ~ (sumw)^2 / sumw2 = y^2 / err^2
+    const double y = h->GetBinContent(bin);
+    const double e = h->GetBinError(bin);
+    if (e > 0.0) {
+        const double e2 = e * e;
+        return (e2 > 0.0) ? (y * y / e2) : 0.0;
+    }
+    return (y > 0.0) ? y : 0.0;
+}
+
+static inline void transform_value_and_var(double y, double var_y,
+                                           SmoothTransform tr,
+                                           double& z, double& var_z)
+{
+    // Map y -> z, and propagate variance: var_z = (dz/dy)^2 * var_y
+    // NOTE: if var_y is 0, var_z becomes 0; caller should handle.
+    if (tr == SmoothTransform::kAnscombe) {
+        const double yp = std::max(0.0, y);
+        const double u  = yp + 0.375;                 // 3/8
+        z = 2.0 * std::sqrt(u);
+        // dz/dy = 1/sqrt(u)
+        const double dzdy = (u > 0.0) ? (1.0 / std::sqrt(u)) : 0.0;
+        var_z = dzdy * dzdy * var_y;
+        return;
+    }
+
+    if (tr == SmoothTransform::kLog1p) {
+        const double yp = std::max(0.0, y);
+        z = std::log1p(yp);
+        // dz/dy = 1/(1+y)
+        const double dzdy = 1.0 / (1.0 + yp);
+        var_z = dzdy * dzdy * var_y;
+        return;
+    }
+
+    // None
+    z = y;
+    var_z = var_y;
+}
+
+static inline double clip_contrib(double contrib, double clipSigma)
+{
+    if (!(clipSigma > 0.0) || !std::isfinite(contrib)) return contrib;
+    // contrib = (residual^2 / var) = z^2. cap z at clipSigma => cap contrib at clipSigma^2.
+    const double cap = clipSigma * clipSigma;
+    return std::min(contrib, cap);
+}
+
+static HistogramSmoothness calculate_histogram_smoothness(const TH1D* hist,
+                                                          const SmoothnessOptions& opt = {})
+{
+    HistogramSmoothness r;
+    if (!hist) return r;
+
+    const int nb = hist->GetNbinsX();
+    if (nb < 5 && (opt.use_d3 || opt.use_d4)) {
+        // still allow d2 for small hists
+    }
+    if (nb < 3) return r;
+
+    const int b0 = opt.ignoreUnderOverflow ? 1 : 0;
+    const int b1 = opt.ignoreUnderOverflow ? nb : (nb + 1);
+
+    auto in_range = [&](int bin) {
+        const double x = hist->GetBinCenter(bin);
+        if (std::isfinite(opt.xmin) && x < opt.xmin) return false;
+        if (std::isfinite(opt.xmax) && x > opt.xmax) return false;
+        return true;
+    };
+
+    // Precompute transformed values z[i] and variances vz[i] for each bin
+    // (only for bins in range; others flagged invalid).
+    std::vector<double> z(nb + 2, 0.0), vz(nb + 2, 0.0);
+    std::vector<bool>   ok(nb + 2, false);
+
+    for (int i = b0; i <= b1; ++i) {
+        if (i < 0 || i > nb + 1) continue;
+        if (i == 0 || i == nb + 1) {
+            // under/overflow: ignore by default
+            if (opt.ignoreUnderOverflow) continue;
+        }
+        if (!in_range(i)) continue;
+
+        const double neff = effective_count(hist, i);
+        if (!(neff >= opt.minEffectiveCount)) continue;
+
+        const double y  = hist->GetBinContent(i);
+        const double vy = bin_var_raw(hist, i);
+        if (!std::isfinite(y) || !std::isfinite(vy)) continue;
+
+        double zi = 0.0, vzi = 0.0;
+        transform_value_and_var(y, vy, opt.transform, zi, vzi);
+
+        if (!std::isfinite(zi) || !(vzi >= 0.0) || !std::isfinite(vzi)) continue;
+
+        z[i]  = zi;
+        vz[i] = vzi;
+        ok[i] = true;
+    }
+
+    // --- 2nd difference on transformed values ---
+    if (opt.use_d2) {
+        for (int i = 2; i <= nb - 1; ++i) {
+            if (!ok[i-1] || !ok[i] || !ok[i+1]) continue;
+
+            const double d2 = z[i-1] - 2.0*z[i] + z[i+1];
+            const double v  = vz[i-1] + 4.0*vz[i] + vz[i+1];
+            if (!is_finite_pos(v)) continue;
+
+            double c = (d2*d2)/v;
+            c = clip_contrib(c, opt.clipSigma);
+            r.chi2_d2 += c;
+            ++r.ndof_d2;
+        }
+        r.s2 = (r.ndof_d2 > 0) ? (r.chi2_d2 / r.ndof_d2) : 0.0;
+    }
+
+    // --- 3rd difference ---
+    if (opt.use_d3 && nb >= 4) {
+        for (int i = 2; i <= nb - 2; ++i) {
+            if (!ok[i-1] || !ok[i] || !ok[i+1] || !ok[i+2]) continue;
+
+            const double d3 = (-1.0)*z[i-1] + 3.0*z[i] - 3.0*z[i+1] + 1.0*z[i+2];
+            const double v  = vz[i-1] + 9.0*vz[i] + 9.0*vz[i+1] + vz[i+2];
+            if (!is_finite_pos(v)) continue;
+
+            double c = (d3*d3)/v;
+            c = clip_contrib(c, opt.clipSigma);
+            r.chi2_d3 += c;
+            ++r.ndof_d3;
+        }
+        r.s3 = (r.ndof_d3 > 0) ? (r.chi2_d3 / r.ndof_d3) : 0.0;
+    }
+
+    // --- 4th difference ---
+    if (opt.use_d4 && nb >= 5) {
+        for (int i = 3; i <= nb - 2; ++i) {
+            if (!ok[i-2] || !ok[i-1] || !ok[i] || !ok[i+1] || !ok[i+2]) continue;
+
+            const double d4 = z[i-2] - 4.0*z[i-1] + 6.0*z[i] - 4.0*z[i+1] + z[i+2];
+            const double v  = vz[i-2] + 16.0*vz[i-1] + 36.0*vz[i] + 16.0*vz[i+1] + vz[i+2];
+            if (!is_finite_pos(v)) continue;
+
+            double c = (d4*d4)/v;
+            c = clip_contrib(c, opt.clipSigma);
+            r.chi2_d4 += c;
+            ++r.ndof_d4;
+        }
+        r.s4 = (r.ndof_d4 > 0) ? (r.chi2_d4 / r.ndof_d4) : 0.0;
+    }
+
+    // Combine (weighted by dof per order)
+    const double denom = opt.w2*r.ndof_d2 + opt.w3*r.ndof_d3 + opt.w4*r.ndof_d4;
+    if (denom > 0.0) {
+        r.chi2 = opt.w2*r.chi2_d2 + opt.w3*r.chi2_d3 + opt.w4*r.chi2_d4;
+        r.ndof = static_cast<int>(std::lround(denom));
+        r.smoothness = r.chi2 / denom;
+    } else {
+        r.chi2 = 0.0;
+        r.ndof = 0;
+        r.smoothness = 0.0;
+    }
+
+    return r;
+}
+
+// struct HistogramSmoothness {
+//     double chi2 = 0.0;
+//     int ndof = 0;
+//     double smoothness = 0.0; // chi2 / ndof
+// };
+
+// static HistogramSmoothness calculate_histogram_smoothness(const TH1D* hist)
+// {
+//     HistogramSmoothness result;
+//     if (!hist) {
+//         return result;
+//     }
+
+//     const int nbins = hist->GetNbinsX();
+//     if (nbins < 3) {
+//         return result;
+//     }
+
+//     double chi2_sum = 0.0;
+//     int ndof = 0;
+
+//     for (int bin = 2; bin <= nbins - 1; ++bin) {
+//         const double prev = hist->GetBinContent(bin - 1);
+//         const double curr = hist->GetBinContent(bin);
+//         const double next = hist->GetBinContent(bin + 1);
+
+//         const double expected = 0.5 * (prev + next);
+//         if (expected <= 0.0) {
+//             continue;
+//         }
+
+//         const double diff = curr - expected;
+//         chi2_sum += (diff * diff) / expected;
+//         ++ndof;
+//     }
+
+//     result.chi2 = chi2_sum;
+//     result.ndof = ndof;
+//     result.smoothness = (ndof > 0) ? (chi2_sum / ndof) : 0.0;
+//     return result;
+// }
 
 double quantile_from_tf1(TF1* f, double q, double xmin, double xmax)
 {
@@ -162,6 +445,31 @@ int main(int argc, char **argv) {
     script_name = script_name.substr(script_name.find_last_of("/\\") + 1).substr(0, script_name.find_last_of("."));
 
     configure_logger(false);
+
+    const double tot_adc_slope = 4;
+    const double tot_adc_offset = -1000;
+
+    double tot_adc_slope_range_min = 0.5;
+    double tot_adc_slope_range_max = 8.0;
+    double tot_adc_slope_range_step = 0.01;
+    std::vector<double> tot_adc_slope_factors;
+    for (double slope = tot_adc_slope_range_min; slope <= tot_adc_slope_range_max; slope += tot_adc_slope_range_step) {
+        tot_adc_slope_factors.push_back(slope);
+    }
+
+    double tot_adc_offset_range_min = -3500.0;;
+    double tot_adc_offset_range_max = 1000.0;
+    double tot_adc_offset_range_step = 10.0;
+    std::vector<double> tot_adc_offset_factors;
+    for (double offset = tot_adc_offset_range_min; offset <= tot_adc_offset_range_max; offset += tot_adc_offset_range_step) {
+        tot_adc_offset_factors.push_back(offset);
+    }
+
+    const int example_channel = CommonParams::example_channel;
+
+    const int combine_h1_bins = 128;
+    const double combine_h1_xmin = 0;
+    const double combine_h1_xmax = 4096;
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
@@ -313,6 +621,20 @@ int main(int argc, char **argv) {
     output_tree->Branch("tot_sum", out_branch_tot_sum, "tot_sum/D");
     output_tree->Branch("adc_in_tot_channels", out_branch_adc_in_tot_channels, "adc_in_tot_channels/D");
 
+    std::vector<double> example_channel_adc_values;
+    std::vector<double> example_channel_tot_values;
+    example_channel_adc_values.reserve(entry_max);
+    example_channel_tot_values.reserve(entry_max);
+
+    std::vector<double> sum_adc_values;
+    std::vector<double> sum_tot_values;
+    std::vector<double> sum_adc_in_tot_channels_values;
+    std::vector<int> tot_channel_counts;
+    sum_adc_values.reserve(entry_max);
+    sum_tot_values.reserve(entry_max);
+    sum_adc_in_tot_channels_values.reserve(entry_max);
+    tot_channel_counts.reserve(entry_max);
+
     input_root->cd();
     for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
         auto *branch_timestamps = new ULong64_t[machine_gun_samples];  // 64 bits
@@ -384,12 +706,39 @@ int main(int argc, char **argv) {
     );
     h2_tot_peak_channel_correlation->SetDirectory(nullptr);
 
+    TH1D *h1_eff_adc_example_chn = new TH1D(
+        "h1_eff_adc_example_chn",
+        ("Effective ADC Distribution for Channel " + std::to_string(example_channel) + ";ADC Value;Counts").c_str(),
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax
+    );
+    h1_eff_adc_example_chn->SetDirectory(nullptr);
+    TH1D *h1_raw_adc_example_chn = new TH1D(
+        "h1_raw_adc_example_chn",
+        ("Raw ADC Distribution for Channel " + std::to_string(example_channel) + ";ADC Value;Counts").c_str(),
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax
+    );
+    h1_raw_adc_example_chn->SetDirectory(nullptr);
+    TH1D *h1_tot_example_chn = new TH1D(
+        "h1_tot_example_chn",
+        ("ToT Distribution for Channel " + std::to_string(example_channel) + ";ToT Value;Counts").c_str(),
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax
+    );
+    h1_tot_example_chn->SetDirectory(nullptr);
+
+    TH2D *h2_tot_first_adc_correlation = new TH2D(
+        "h2_tot_first_adc_correlation",
+        "ToT First Value vs ADC Peak Value Correlation;ADC Peak Value;ToT First Value",
+        512, 0, 1024,
+        512, 0, 4096
+    );
+    h2_tot_first_adc_correlation->SetDirectory(nullptr);
+
     // * --- ADC Sum distribution Histogram ---
     std::vector<double> tot_sum_list;
     tot_sum_list.reserve(entry_max);
 
-    const int adc_peak_min_index = 4;
-    const int adc_peak_max_index = 8;
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
 
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
@@ -397,6 +746,7 @@ int main(int argc, char **argv) {
         double adc_sum = 0.0;
         double tot_sum = 0.0;
         double adc_in_tot_channels = 0.0;
+        int tot_channel_count = 0;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
@@ -442,26 +792,49 @@ int main(int argc, char **argv) {
                 double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 // ! now only fill with not saturated peak values
-                if (adc_peak_value_pede_sub > 0 && (adc_peak_ranged_value < 950) || tot_first_value == 0) {
+                if (adc_peak_value_pede_sub > 0 && (adc_peak_ranged_value < 1023) || tot_first_value == 0) {
                 // if (adc_peak_value_pede_sub > 0) {
                     h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
                     adc_sum += adc_peak_value_pede_sub;
                 }
-                if (tot_first_value > 0) {
+                if (tot_first_value > 0 && (adc_peak_ranged_value >= 1023)) {
                     auto tot_decoded = decode_tot_value(tot_first_value);
                     h2_tot_peak_channel_correlation->Fill(channel, tot_decoded);
                     tot_sum += tot_decoded;
                     adc_in_tot_channels += adc_peak_value_pede_sub;
+                    tot_channel_count += 1;
+                }
+                if (channel + vldb_id * FPGA_CHANNEL_NUMBER == example_channel) {
+                    // compute effective adc
+                    if (tot_first_value > 0 && (adc_peak_ranged_value >= 1023)) {
+                        auto tot_decoded = decode_tot_value(tot_first_value);
+                        double effective_adc = tot_adc_slope * static_cast<double>(tot_decoded) + tot_adc_offset;
+                        h1_eff_adc_example_chn->Fill(effective_adc);
+                        h1_tot_example_chn->Fill(effective_adc);
+                        h1_raw_adc_example_chn->Fill(adc_peak_value_pede_sub);
+                        h2_tot_first_adc_correlation->Fill(adc_peak_ranged_value, tot_decoded);
+                    }
+                    else {
+                        h1_raw_adc_example_chn->Fill(adc_peak_value_pede_sub);
+                        h1_eff_adc_example_chn->Fill(adc_peak_value_pede_sub);
+                    }
+                    example_channel_adc_values.push_back(adc_peak_value_pede_sub);
+                    example_channel_tot_values.push_back(tot_first_value);
                 }
             } // end of channel loop
         } // end of vldb loop
         // tot_sum_list.push_back(adc_sum); // because we don't know the max adc sum value beforehand
-        if (tot_sum >= 1000.0)
+        if (tot_sum > 0.0)
             tot_sum_list.push_back(tot_sum);
         // fill output tree
         *out_branch_adc_sum = adc_sum;
         *out_branch_tot_sum = tot_sum;
         *out_branch_adc_in_tot_channels = adc_in_tot_channels;
+
+        sum_adc_values.push_back(adc_sum);
+        sum_tot_values.push_back(tot_sum);
+        sum_adc_in_tot_channels_values.push_back(adc_in_tot_channels);
+        tot_channel_counts.push_back(tot_channel_count);
         output_tree->Fill();
     } // end of event loop
     input_root->Close();
@@ -533,6 +906,209 @@ int main(int argc, char **argv) {
     tot_peak_channel_correlation_canvas.Write();
     tot_peak_channel_correlation_canvas.Close();
 
+    TCanvas tot_first_adc_correlation_canvas("tot_first_adc_correlation_canvas", "ToT First vs ADC Peak Correlation Canvas", 800, 600);
+    canvas_info = "ToT First Value vs ADC Peak Value Correlation";
+    format_2d_hist_canvas(&tot_first_adc_correlation_canvas, h2_tot_first_adc_correlation, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    tot_first_adc_correlation_canvas.Print(out_pdf.c_str());
+    tot_first_adc_correlation_canvas.Write();
+    tot_first_adc_correlation_canvas.Close();
+
+    TCanvas eff_adc_example_chn_canvas("eff_adc_example_chn_canvas", "Effective ADC Example Channel Canvas", 800, 600);
+    canvas_info = "Effective ADC Distribution for Channel " + std::to_string(example_channel);
+    double max_y_value = std::max(h1_eff_adc_example_chn->GetMaximum(), std::max(h1_raw_adc_example_chn->GetMaximum(), h1_tot_example_chn->GetMaximum()));
+    h1_eff_adc_example_chn->SetMaximum(max_y_value * 1.2);
+    h1_raw_adc_example_chn->SetMaximum(max_y_value * 1.2);
+    h1_tot_example_chn->SetMaximum(max_y_value * 1.2);
+    // set to log scale
+    eff_adc_example_chn_canvas.SetLogy();
+    format_1d_hist_canvas(&eff_adc_example_chn_canvas, h1_eff_adc_example_chn, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    // draw other hist on the same canvas
+    h1_raw_adc_example_chn->SetLineColor(kRed+2);
+    h1_raw_adc_example_chn->Draw("SAME");
+    h1_tot_example_chn->SetLineColor(kGreen+2);
+    h1_tot_example_chn->Draw("SAME");
+    // add legend
+    TLegend *legend = new TLegend(0.6,0.7,0.88,0.88);
+    legend->SetBorderSize(0);
+    legend->SetFillColorAlpha(kWhite,0.0);
+    legend->AddEntry(h1_eff_adc_example_chn, "Effective ADC", "l");
+    legend->AddEntry(h1_raw_adc_example_chn, "Raw ADC", "l");
+    legend->AddEntry(h1_tot_example_chn, "ToT", "l");
+    legend->Draw();
+    eff_adc_example_chn_canvas.Print(out_pdf.c_str());
+    eff_adc_example_chn_canvas.Write();
+    eff_adc_example_chn_canvas.Close();
+
+    // calculate the smoothness of the example channel effective adc distribution for different slope and offset
+    std::vector<std::vector<double>> smoothness_matrix;
+    for (const auto& slope_factor : tot_adc_slope_factors) {
+        std::vector<double> smoothness_row;
+        for (const auto& offset_factor : tot_adc_offset_factors) {
+            // calculate effective adc values
+            std::vector<double> effective_adc_values;
+            effective_adc_values.reserve(example_channel_tot_values.size());
+            for (size_t i = 0; i < example_channel_tot_values.size(); i++) {
+                auto tot_value = example_channel_tot_values[i];
+                auto adc_value = example_channel_adc_values[i];
+                if (tot_value > 0) {
+                    auto tot_decoded = decode_tot_value(tot_value);
+                    double effective_adc = slope_factor * static_cast<double>(tot_decoded) + offset_factor;
+                    effective_adc_values.push_back(effective_adc);
+                } else {
+                    effective_adc_values.push_back(adc_value);
+                }
+            }
+            // fill histogram
+            TH1D* h1_effective_adc_temp = new TH1D(
+                "h1_effective_adc_temp",
+                "Temporary Effective ADC Histogram",
+                combine_h1_bins, combine_h1_xmin, combine_h1_xmax
+            );
+            for (const auto& effective_adc_value : effective_adc_values) {
+                h1_effective_adc_temp->Fill(effective_adc_value);
+            }
+            // calculate smoothness
+            auto smoothness_result = calculate_histogram_smoothness(h1_effective_adc_temp);
+            smoothness_row.push_back(smoothness_result.smoothness);
+
+            delete h1_effective_adc_temp;
+        }
+        smoothness_matrix.push_back(smoothness_row);
+    }
+
+    // plot smoothness heatmap
+    TCanvas smoothness_heatmap_canvas("smoothness_heatmap_canvas", "Smoothness Heatmap Canvas", 800, 600);
+    TH2D* h2_smoothness_heatmap = new TH2D(
+        "h2_smoothness_heatmap",
+        "Smoothness Heatmap;ToT ADC Slope Factor;ToT ADC Offset Factor",
+        static_cast<int>(tot_adc_slope_factors.size()), tot_adc_slope_range_min - tot_adc_slope_range_step / 2, tot_adc_slope_range_max + tot_adc_slope_range_step / 2,
+        static_cast<int>(tot_adc_offset_factors.size()), tot_adc_offset_range_min - tot_adc_offset_range_step / 2, tot_adc_offset_range_max + tot_adc_offset_range_step / 2
+    );
+    for (size_t i = 0; i < tot_adc_slope_factors.size(); i++) {
+        for (size_t j = 0; j < tot_adc_offset_factors.size(); j++) {
+            h2_smoothness_heatmap->SetBinContent(i + 1, j + 1, smoothness_matrix[i][j]);
+        }
+    }
+    canvas_info = "Smoothness Heatmap for Channel " + std::to_string(example_channel);
+    format_2d_hist_canvas(&smoothness_heatmap_canvas, h2_smoothness_heatmap, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info); 
+    // draw a rad line of y=900-512x
+    TLine *line = new TLine(tot_adc_slope_range_min, 900 - 512 * tot_adc_slope_range_min, tot_adc_slope_range_max, 900 - 512 * tot_adc_slope_range_max);
+    line->SetLineColor(kRed);
+    line->SetLineWidth(2);
+    line->SetLineStyle(2);
+    // draw within the frame
+    smoothness_heatmap_canvas.cd();
+    line->Draw("SAME");
+    smoothness_heatmap_canvas.Print(out_pdf.c_str());
+    smoothness_heatmap_canvas.Write();
+    smoothness_heatmap_canvas.Close();
+
+    // draw the 1D histogram of sum with example slope and offset
+    TCanvas effective_adc_sum_example_canvas("effective_adc_sum_example_canvas", "Effective ADC Sum Example Canvas", 800, 600);
+    TH1D* h1_effective_adc_sum_example = new TH1D(
+        "h1_effective_adc_sum_example",
+        "Effective ADC Sum Example Histogram",
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax*50
+    );
+    TH1D* h1_raw_adc_sum_example = new TH1D(
+        "h1_raw_adc_sum_example",
+        "Raw ADC Sum Example Histogram",
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax*50
+    );
+    TH1D* h1_tot_sum_example = new TH1D(
+        "h1_tot_sum_example",
+        "ToT Sum Example Histogram",
+        combine_h1_bins, combine_h1_xmin, combine_h1_xmax*50
+    );
+    for (size_t i = 0; i < sum_tot_values.size(); i++) {
+        auto tot_value = sum_tot_values[i];
+        auto adc_value = sum_adc_values[i];
+        auto adc_in_tot_channels_value = sum_adc_in_tot_channels_values[i];
+        int tot_channel_count = tot_channel_counts[i];
+        double effective_adc = adc_value - adc_in_tot_channels_value + (tot_adc_slope * tot_value + tot_adc_offset* tot_channel_count);
+        h1_effective_adc_sum_example->Fill(effective_adc);
+        h1_raw_adc_sum_example->Fill(adc_value);
+        h1_tot_sum_example->Fill(tot_adc_slope * tot_value + tot_adc_offset);
+    }
+    // plot
+    canvas_info = "Effective ADC Sum Distribution Example";
+    double max_y_value_sum = std::max(h1_effective_adc_sum_example->GetMaximum(), std::max(h1_raw_adc_sum_example->GetMaximum(), h1_tot_sum_example->GetMaximum()));
+    h1_effective_adc_sum_example->SetMaximum(max_y_value_sum * 1.2);
+    h1_raw_adc_sum_example->SetMaximum(max_y_value_sum * 1.2);
+    h1_tot_sum_example->SetMaximum(max_y_value_sum * 1.2);
+    // set to log scale
+    // effective_adc_sum_example_canvas.SetLogy();
+    format_1d_hist_canvas(&effective_adc_sum_example_canvas, h1_effective_adc_sum_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    // draw other hist on the same canvas
+    h1_raw_adc_sum_example->SetLineColor(kRed+2);
+    h1_raw_adc_sum_example->Draw("SAME");
+    h1_tot_sum_example->SetLineColor(kGreen+2);
+    h1_tot_sum_example->Draw("SAME");
+    // add legend
+    TLegend *legend_sum = new TLegend(0.6,0.7,0.88,0.88);
+    legend_sum->SetBorderSize(0);
+    legend_sum->SetFillColorAlpha(kWhite,0.0);
+    legend_sum->AddEntry(h1_effective_adc_sum_example, "Effective ADC Sum", "l");
+    legend_sum->AddEntry(h1_raw_adc_sum_example, "Raw ADC Sum", "l");
+    legend_sum->AddEntry(h1_tot_sum_example, "ToT Sum", "l");
+    legend_sum->Draw();
+    effective_adc_sum_example_canvas.Print(out_pdf.c_str());
+    effective_adc_sum_example_canvas.Write();
+    effective_adc_sum_example_canvas.Close();
+    
+
+    // calculate the smoothness for sum
+    std::vector<std::vector<double>> smoothness_matrix_sum;
+    for (const auto& slope_factor : tot_adc_slope_factors) {
+        std::vector<double> smoothness_row;
+        for (const auto& offset_factor : tot_adc_offset_factors) {
+            // calculate effective adc values
+            std::vector<double> effective_adc_values;
+            effective_adc_values.reserve(sum_tot_values.size());
+            for (size_t i = 0; i < sum_tot_values.size(); i++) {
+                auto tot_value = sum_tot_values[i];
+                auto adc_value = sum_adc_values[i];
+                auto adc_in_tot_channels_value = sum_adc_in_tot_channels_values[i];
+                double effective_adc = adc_value - adc_in_tot_channels_value + (tot_adc_slope * tot_value + tot_adc_offset);
+                effective_adc_values.push_back(effective_adc);
+            }
+            // fill histogram
+            TH1D* h1_effective_adc_temp = new TH1D(
+                "h1_effective_adc_temp",
+                "Temporary Effective ADC Histogram",
+                combine_h1_bins, combine_h1_xmin, combine_h1_xmax
+            );
+            for (const auto& effective_adc_value : effective_adc_values) {
+                h1_effective_adc_temp->Fill(effective_adc_value);
+            }
+            // calculate smoothness
+            auto smoothness_result = calculate_histogram_smoothness(h1_effective_adc_temp);
+            smoothness_row.push_back(smoothness_result.smoothness);
+
+            delete h1_effective_adc_temp;
+        }
+        smoothness_matrix_sum.push_back(smoothness_row);
+    }
+
+    // plot smoothness heatmap for sum
+    TCanvas smoothness_heatmap_sum_canvas("smoothness_heatmap_sum_canvas", "Smoothness Heatmap Sum Canvas", 800, 600);
+    TH2D* h2_smoothness_heatmap_sum = new TH2D(
+        "h2_smoothness_heatmap_sum",
+        "Smoothness Heatmap Sum;ToT ADC Slope Factor;ToT ADC Offset Factor",
+        static_cast<int>(tot_adc_slope_factors.size()), tot_adc_slope_range_min - tot_adc_slope_range_step / 2, tot_adc_slope_range_max + tot_adc_slope_range_step / 2,
+        static_cast<int>(tot_adc_offset_factors.size()), tot_adc_offset_range_min - tot_adc_offset_range_step / 2, tot_adc_offset_range_max + tot_adc_offset_range_step / 2
+    );
+    for (size_t i = 0; i < tot_adc_slope_factors.size(); i++) {
+        for (size_t j = 0; j < tot_adc_offset_factors.size(); j++) {
+            h2_smoothness_heatmap_sum->SetBinContent(i + 1, j + 1, smoothness_matrix_sum[i][j]);
+        }
+    }
+    canvas_info = "Smoothness Heatmap Sum";;
+    format_2d_hist_canvas(&smoothness_heatmap_sum_canvas, h2_smoothness_heatmap_sum, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info); 
+    smoothness_heatmap_sum_canvas.Print(out_pdf.c_str());
+    smoothness_heatmap_sum_canvas.Write();
+    smoothness_heatmap_sum_canvas.Close();
+
     // ! -- Raw ADC Sum distribution Histogram ---
     // ! =====================================================================================
     if (tot_sum_list.size() < 50) {
@@ -574,6 +1150,10 @@ int main(int argc, char **argv) {
     double x_max = adc_sum_90pct_max * 2.5;
     const double bin_width = 450.0;
     int n_bins = static_cast<int>((x_max - x_min) / bin_width);
+    if (n_bins < 1) {
+        n_bins = 1;
+        x_max = x_min + bin_width;
+    }
     if (n_bins < 100) n_bins = 100;
     TH1D* h1_tot_sum_distribution = new TH1D("h1_tot_sum_distribution", "ToT Sum Distribution;ToT Sum;Counts", n_bins, x_min, x_max);
     for (const auto& adc_sum_value : tot_sum_list) {
@@ -593,10 +1173,8 @@ int main(int argc, char **argv) {
     pave_stats->SetTextSize(0.03);
     pave_stats->SetTextColor(kBlue+2);
     pave_stats->AddText(("Entries: " + std::to_string(static_cast<int>(tot_sum_entry))).c_str());
-    // only keep two decimal points for mean
-    pave_stats->AddText(("Mean: " + std::to_string(static_cast<int>(tot_sum_mean * 100)) .insert(std::to_string(static_cast<int>(tot_sum_mean * 100)).length() - 2, ".")).c_str());
-    // only keep two decimal points for rms
-    pave_stats->AddText(("RMS: " + std::to_string(static_cast<int>(tot_sum_rms * 100)) .insert(std::to_string(static_cast<int>(tot_sum_rms * 100)).length() - 2, ".")).c_str());
+    pave_stats->AddText(("Mean: " + format_decimal(tot_sum_mean)).c_str());
+    pave_stats->AddText(("RMS: " + format_decimal(tot_sum_rms)).c_str());
     pave_stats->Draw();
 
     tot_sum_distribution_canvas.Print(out_pdf.c_str());
@@ -659,9 +1237,9 @@ int main(int argc, char **argv) {
     pave_stats_pre->SetTextSize(0.03);
     pave_stats_pre->SetTextColor(kRed);
     pave_stats_pre->AddText("Pre-Fit:");
-    pave_stats_pre->AddText(("  Mean: " + std::to_string(static_cast<int>(pre_fit_mean * 100)) .insert(std::to_string(static_cast<int>(pre_fit_mean * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre->AddText(("  Sigma: " + std::to_string(static_cast<int>(pre_fit_sigma * 100)) .insert(std::to_string(static_cast<int>(pre_fit_sigma * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre->AddText(("  Chi2/NDF: " + std::to_string(static_cast<int>(pre_fit_chi2 * 100)) .insert(std::to_string(static_cast<int>(pre_fit_chi2 * 100)).length() - 2, ".") + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
+    pave_stats_pre->AddText(("  Mean: " + format_decimal(pre_fit_mean)).c_str());
+    pave_stats_pre->AddText(("  Sigma: " + format_decimal(pre_fit_sigma)).c_str());
+    pave_stats_pre->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
     pave_stats_pre->Draw();
 
     TPaveText *pave_stats_pre_2 = new TPaveText(0.55,0.58,0.90,0.73,"NDC");
@@ -672,9 +1250,9 @@ int main(int argc, char **argv) {
     pave_stats_pre_2->SetTextSize(0.03);
     pave_stats_pre_2->SetTextColor(kGreen+2);
     pave_stats_pre_2->AddText("Pre-Fit 2:");
-    pave_stats_pre_2->AddText(("  Mean: " + std::to_string(static_cast<int>(pre_fit_2_mean * 100)) .insert(std::to_string(static_cast<int>(pre_fit_2_mean * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre_2->AddText(("  Sigma: " + std::to_string(static_cast<int>(pre_fit_2_sigma * 100)) .insert(std::to_string(static_cast<int>(pre_fit_2_sigma * 100)).length() - 2, ".")).c_str());
-    pave_stats_pre_2->AddText(("  Chi2/NDF: " + std::to_string(static_cast<int>(pre_fit_2_chi2 * 100 + 0.5) / 100.0).substr(0, std::to_string(static_cast<int>(pre_fit_2_chi2 * 100 + 0.5) / 100.0).find('.') + 3) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
+    pave_stats_pre_2->AddText(("  Mean: " + format_decimal(pre_fit_2_mean)).c_str());
+    pave_stats_pre_2->AddText(("  Sigma: " + format_decimal(pre_fit_2_sigma)).c_str());
+    pave_stats_pre_2->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_2_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
     pave_stats_pre_2->Draw();
 
     tot_sum_distribution_fitted_canvas.Modified();
@@ -886,7 +1464,6 @@ int main(int argc, char **argv) {
     TCanvas end_canvas("end_canvas", "End Canvas", 800, 600);
     end_canvas.Print((out_pdf + "]").c_str());
     end_canvas.Close();
-
     // write important values for comparison
     TParameter<double> param_gaus_fit_mean("gaus_fit_mean", mean_avg); 
     TParameter<double> param_gaus_fit_sigma("gaus_fit_sigma", sigma_avg);

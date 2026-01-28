@@ -262,10 +262,11 @@ int main(int argc, char **argv) {
 
     std::vector<double> tot_adc_slope_factors;
     // from 0.5 to 3.0, step 0.25
-    for (double slope = 0.5; slope <= 8.0; slope += 0.05) {
+    // for (double slope = 0.5; slope <= 8.0; slope += 0.05) {
+    for (double slope = 1.8; slope <= 2.4; slope += 0.1) {
         tot_adc_slope_factors.push_back(slope);
     }
-    std::vector<double> tot_adc_offset_factors = {0};
+    std::vector<double> tot_adc_offset_factors = {-200.0, -100.0, 0.0, 100.0, 200.0};
 
     int number_of_combine_factors = tot_adc_slope_factors.size() * tot_adc_offset_factors.size();
     std::vector<std::vector<std::vector<double>>> combined_value_matrix(run_files.size(), std::vector<std::vector<double>>(number_of_combine_factors));
@@ -273,8 +274,9 @@ int main(int argc, char **argv) {
 
     std::vector<std::vector<double>> example_value_matrix(run_files.size());
 
-    double example_tot_adc_slope = 2.3;
-    double example_tot_adc_offset = 900.0 - example_tot_adc_slope * 512.0;
+    double example_tot_adc_slope = 4.0;
+    // double example_tot_adc_offset = 900.0 - example_tot_adc_slope * 512.0;
+    double example_tot_adc_offset = -1000.0;
     spdlog::info("Example TOT ADC Slope: {}, Offset: {}", example_tot_adc_slope, example_tot_adc_offset);
 
     for (int _file_index = 0; _file_index < static_cast<int>(run_files.size()); ++_file_index) {
@@ -285,7 +287,7 @@ int main(int argc, char **argv) {
         if (!input_root || input_root->IsZombie()) {
             spdlog::error("Failed to open input file {}", run_file);
             if (input_root) { input_root->Close(); delete input_root; }
-            continue; // 或者 return 1; 视你整体流程而定
+            continue;
         }
 
         // TCanvas tot_sum_distribution_canvas("tot_sum_distribution_canvas", "ToT Sum Distribution Canvas", 800, 600);
@@ -299,7 +301,7 @@ int main(int argc, char **argv) {
                 spdlog::info("Successfully read histogram 'h1_tot_sum_distribution' from canvas in file {}", run_file);
             } else {
                 spdlog::error("Failed to get histogram 'h1_tot_sum_distribution' from canvas in file {}", run_file);
-                continue; // 或者 return 1;
+                continue;
             }
         }
 
@@ -338,7 +340,8 @@ int main(int argc, char **argv) {
                 for (int offset_idx = 0; offset_idx < static_cast<int>(tot_adc_offset_factors.size()); ++offset_idx) {
                     // double offset = tot_adc_offset_factors[offset_idx];
                     // TODO: remove this temporary fix
-                    double offset = 900.0 - 512.0 * slope;
+                    // double offset = 900.0 - 512.0 * slope;
+                    double offset = 0;
                     double combined_value = adc_sum - adc_in_tot_channels + (tot_sum * slope + offset);
                     auto & combined_values = run_combined_values[slope_idx * tot_adc_offset_factors.size() + offset_idx];
                     combined_values.push_back(combined_value);
@@ -353,7 +356,6 @@ int main(int argc, char **argv) {
         }
 
         TDirectory* dir = input_root; 
-        // TDirectory* dir = input_root->GetDirectory("Results"); // 若你写在子目录，请改用这行
         if (!dir) {
             spdlog::error("Directory with parameters is missing in file {}", run_file);
             input_root->Close(); delete input_root;
@@ -410,7 +412,7 @@ int main(int argc, char **argv) {
         } catch (const std::exception& e) {
             spdlog::error("While reading parameters from {}: {}", run_file, e.what());
             input_root->Close(); delete input_root;
-            continue; // 或者 return 1;
+            continue;
         }
 
         input_root->Close();

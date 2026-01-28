@@ -6,6 +6,7 @@
 #include "H2GCROC_Toolbox.hxx"
 #include "H2GCROC_TimewalkLUT.hxx"
 #include "H2GCROC_ToA_Align.hxx"
+#include "CommonParams.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -114,7 +115,7 @@ int main(int argc, char **argv) {
     // * --------------------------------------------------------------------------------
     int machine_gun_samples = 16;
     int vldb_number = 2;
-    int chn_example = 299; // print this channel seprately
+    int chn_example = CommonParams::example_channel;
     const double channel_toa_min_ns = 0.0;
     const double channel_toa_max_ns = 300.0;
     const double event_toa_min_ns = 0.0;
@@ -412,8 +413,8 @@ int main(int argc, char **argv) {
         event_display_toa_hitmap.push_back(toa_hitmap);
     }
 
-    const int adc_peak_min_index = 6;
-    const int adc_peak_max_index = 7;
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
 
     std::vector<double> event_adc_list;
     std::vector<double> event_adc_toa_on_list;

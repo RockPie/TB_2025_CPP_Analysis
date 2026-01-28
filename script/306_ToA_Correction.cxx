@@ -4,6 +4,8 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "CommonParams.hxx"
+
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -121,7 +123,7 @@ int main(int argc, char **argv) {
     // * --------------------------------------------------------------------------------
     int machine_gun_samples = 16;
     int vldb_number = 2;
-    int chn_example = 299; // print this channel separately
+    int chn_example = CommonParams::example_channel;
 
     TFile *input_root = new TFile(script_input_file.c_str(), "READ");
     if (input_root->IsZombie()) {
@@ -241,8 +243,8 @@ int main(int argc, char **argv) {
         vec.reserve(entry_max);
     }
 
-    const int adc_peak_min_index = 4;
-    const int adc_peak_max_index = 8;
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
 
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);

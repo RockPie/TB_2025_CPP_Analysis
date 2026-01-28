@@ -1,5 +1,6 @@
 # Snakefile
 include: "multi_file_workflow.smk"
+include: "params.smk"
 from pathlib import Path
 import json
 import os
@@ -62,6 +63,7 @@ FINAL_TOA_TIMEWALK_LUT_TARGETS = [f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{p['dtype']}
 FINAL_TOA_ANALYSIS_LUT_TARGETS = [f"{DUMP_DIR}/314_ToA_Analysis_LUT/{p['dtype']}/{p['run']}.root" for p in pairs]
 
 FINAL_TOA_RESIDUAL_TARGETS = [f"{DUMP_DIR}/315_ToA_Residual/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_ADC_TOT_TARGETS = [f"{DUMP_DIR}/316_ADC_ToT/{p['dtype']}/{p['run']}.root" for p in pairs]
 
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
@@ -87,7 +89,9 @@ rule all:
         ALL_312_OUTPUTS,
         FINAL_TOA_TIMEWALK_LUT_TARGETS,
         FINAL_TOA_ANALYSIS_LUT_TARGETS,
-        FINAL_TOA_RESIDUAL_TARGETS
+        FINAL_TOA_RESIDUAL_TARGETS,
+        FINAL_ADC_TOT_TARGETS,
+        ALL_317_OUTPUTS
 
 # =========================
 # Build system integration
@@ -401,7 +405,8 @@ rule Pedestal:
 rule RawADC:
     input:
         exe     = f"{BIN_DIR}/304_RawADC",
-        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/304_RawADC/{{dtype}}/{{run}}.root"
     log:
@@ -419,7 +424,8 @@ rule RawADC:
 rule ToA_Correction:
     input:
         exe     = f"{BIN_DIR}/306_ToA_Correction",
-        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root"
     log:
@@ -437,7 +443,8 @@ rule ToA_Timewalk:
         exe     = f"{BIN_DIR}/307_ToA_Timewalk",
         root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
-        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
+        dnl_in  = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root"
     log:
@@ -457,7 +464,8 @@ rule ToA_Analysis:
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
         dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
         timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root",
-        offset_in = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root"
+        offset_in = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
         # timewalk_in = "dump/307_ToA_Timewalk/beamtests/Run0452.root"
     output:
         root_out = f"{DUMP_DIR}/308_ToA_Analysis/{{dtype}}/{{run}}.root"
@@ -476,7 +484,8 @@ rule ToA_Analysis:
 rule ToA_DNL:
     input:
         exe     = f"{BIN_DIR}/309_ToA_DNL",
-        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
     log:
@@ -495,7 +504,8 @@ rule ToA_Offset:
         root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
         dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
-        timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root"
+        timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root"
     log:
@@ -513,7 +523,8 @@ rule ToA_Offset:
 rule RawToT:
     input:
         exe     = f"{BIN_DIR}/311_RawToT",
-        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root"
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/311_RawToT/{{dtype}}/{{run}}.root"
     log:
@@ -531,7 +542,8 @@ rule ToA_Timewalk_LUT:
         exe     = f"{BIN_DIR}/313_ToA_Timewalk_LUT",
         root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
-        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root"
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root"
     log:
@@ -551,7 +563,8 @@ rule ToA_Analysis_LUT:
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
         dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
         timewalk_lut_in = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root",
-        offset_in = f"{DUMP_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.root"
+        offset_in = f"{DUMP_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/314_ToA_Analysis_LUT/{{dtype}}/{{run}}.root"
     log:
@@ -572,7 +585,8 @@ rule ToA_Residual:
         root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
         correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
         dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",
-        timewalk_in = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root"
+        timewalk_in = f"{DUMP_DIR}/313_ToA_Timewalk_LUT/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
     output:
         root_out = f"{DUMP_DIR}/315_ToA_Residual/{{dtype}}/{{run}}.root"
     log:
@@ -585,3 +599,22 @@ rule ToA_Residual:
         mkdir -p {LOG_DIR}/315_ToA_Residual/{wildcards.dtype}
         {input.exe} -f {input.root_in} -c {input.correction_in} -t {input.timewalk_in} -d {input.dnl_in} -o {output.root_out} > {log} 2>&1
         """
+
+# Stage 316: ADC_ToT
+rule ADC_ToT:
+    input:
+        exe     = f"{BIN_DIR}/316_ADC_ToT",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/316_ADC_ToT/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/316_ADC_ToT/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/316_ADC_ToT
+        mkdir -p {DUMP_DIR}/316_ADC_ToT/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/316_ADC_ToT
+        mkdir -p {LOG_DIR}/316_ADC_ToT/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """ 

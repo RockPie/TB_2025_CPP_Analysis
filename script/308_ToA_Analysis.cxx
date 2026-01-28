@@ -4,6 +4,7 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "CommonParams.hxx"
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -113,7 +114,7 @@ int main(int argc, char **argv) {
     // * --------------------------------------------------------------------------------
     int machine_gun_samples = 16;
     int vldb_number = 2;
-    int chn_example = 299; // print this channel seprately
+    int chn_example = CommonParams::example_channel;
 
     TFile *input_correction_root = new TFile(parsed["correction"].as<std::string>().c_str(), "READ");
     if (input_correction_root->IsZombie()) {
@@ -386,8 +387,8 @@ int main(int argc, char **argv) {
     // TH1D *h1d_event_average_toa = new TH1D("h1d_event_average_toa", "h1d_event_average_toa;Average ToA per Event (ns);Counts", 256, 0, 25.0*static_cast<double>(machine_gun_samples));
     // h1d_event_average_toa->SetDirectory(nullptr);
 
-    const int adc_peak_min_index = 4;
-    const int adc_peak_max_index = 8;
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
 
     std::vector<double> event_adc_list;
     std::vector<double> event_adc_toa_on_list;
