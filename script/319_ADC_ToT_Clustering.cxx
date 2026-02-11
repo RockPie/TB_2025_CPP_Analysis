@@ -5,9 +5,9 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "H2GCROC_Clustering.hxx"
 #include "TRandom3.h"
 #include "CommonParams.hxx"
-
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -23,6 +23,31 @@ int main(int argc, char **argv) {
     configure_logger(false);
 
     const int example_channel = CommonParams::example_channel;
+    const double tot_adc_slope      = 0.667;
+    const double tot_adc_intercept  = 0;
+    const double tot_baseline       = 1500.0;
+    const double adc_saturation_threshold = 1023.0;
+
+    double slope_scan_range_min     = 0.5;
+    double slope_scan_range_max     = 8.0;
+    double slope_scan_range_step    = 0.1;
+
+    // const double cluster_cell_pitch = 1.0; // cm
+    // const double cluster_seed_threshold = 1000.0; // ADC counts
+    // const double cluster_neighbor_threshold = 40.0; // ADC counts
+
+    std::vector<double> slope_scan_values;
+    for (double slope = slope_scan_range_min; slope <= slope_scan_range_max; slope += slope_scan_range_step) {
+        slope_scan_values.push_back(slope);
+    }
+
+    double intercept_scan_range_min = -1500.0;
+    double intercept_scan_range_max = 1000.0;
+    double intercept_scan_range_step = 50.0;
+    std::vector<double> intercept_scan_values;
+    for (double intercept = intercept_scan_range_min; intercept <= intercept_scan_range_max; intercept += intercept_scan_range_step) {
+        intercept_scan_values.push_back(intercept);
+    }
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
@@ -189,181 +214,7 @@ int main(int argc, char **argv) {
 
     // * === Define output data structures ===================================================
     // * =====================================================================================
-    // * --- Accumulate waveform for each channel ---
-    std::vector<TH2D*> h2_adc_waveforms(vldb_number * FPGA_CHANNEL_NUMBER, nullptr);
-    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-            std::string h2_name = "h2_adc_waveform_vldb" + std::to_string(vldb_id) + "_ch" + std::to_string(channel);
-            std::string h2_title = "VLDB " + std::to_string(vldb_id) + " Channel " + std::to_string(channel) + " ADC Waveform;Sample Index;ADC Value";
-            h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel] = new TH2D(
-                h2_name.c_str(),
-                h2_title.c_str(),
-                machine_gun_samples, -0.5, machine_gun_samples - 0.5,
-                512, 0, 1024
-            );
-            h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel]->SetDirectory(nullptr);
-        }
-    }
 
-    // * --- ADC Peak Position Histogram ---
-    TH1D* h1_adc_peak_position = new TH1D("h1_adc_peak_position", "ADC Peak Position;Sample Index;Counts", machine_gun_samples, -0.5, machine_gun_samples - 0.5);
-    h1_adc_peak_position->SetDirectory(nullptr);
-
-    // * --- ADC Peak Value - Channel Correlation Histogram ---
-    TH2D *h2_adc_peak_channel_correlation = new TH2D(
-        "h2_adc_peak_channel_correlation",
-        "ADC Peak Value vs Channel Correlation;Channel;ADC Peak Value",
-        FPGA_CHANNEL_NUMBER, -0.5, FPGA_CHANNEL_NUMBER - 0.5,
-        512, 0, 1024
-    );
-    h2_adc_peak_channel_correlation->SetDirectory(nullptr);
-
-    // * --- ADC Sum distribution Histogram ---
-    std::vector<double> adc_sum_list;
-    adc_sum_list.reserve(entry_max);
-
-    // const int adc_peak_min_index = CommonParams::adc_peak_min_index;
-    // const int adc_peak_max_index = CommonParams::adc_peak_max_index;
-    const int adc_peak_min_index = 5;
-    const int adc_peak_max_index = 7;
-
-    // print the adc peak index range
-    spdlog::info("Using ADC peak index range: {} to {}", adc_peak_min_index, adc_peak_max_index);
-
-    // first loop to find the dynamic range of each channel and whether it is a saturated channel
-    std::vector<std::vector<UInt_t>> adc_peak_values_per_channel;
-    adc_peak_values_per_channel.resize(vldb_number * FPGA_CHANNEL_NUMBER);
-    for (int entry = 0; entry < entry_max; entry++) {
-        input_tree->GetEntry(entry);
-        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-            // channel loop
-            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
-                int adc_peak_index = -1;
-                UInt_t adc_peak_value = 0;
-                int adc_peak_ranged_index = -1;
-                UInt_t adc_peak_ranged_value = 0;
-                UInt_t adc_min_value = 1024;
-                adc_pedestal_samples.reserve(3);
-                for (int sample = 0; sample < machine_gun_samples; sample++) {
-                    int idx = sample*FPGA_CHANNEL_NUMBER + channel;
-                    UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
-                    UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
-                    UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
-
-                    if (sample < 3) {
-                        adc_pedestal_samples.push_back(adc_value);
-                    }
-                    if (adc_value > adc_peak_value) {
-                        adc_peak_value = adc_value;
-                        adc_peak_index = sample;
-                    }
-                    if (sample < 8) {
-                        if (adc_value < adc_min_value) {
-                            adc_min_value = adc_value;
-                        }
-                    }
-                    if (sample >= 0 && sample <= 15) {  
-                        // relaxed range because I only care about saturation, not the peak position
-                        if (adc_value > adc_peak_ranged_value) {
-                            adc_peak_ranged_value = adc_value;
-                            adc_peak_ranged_index = sample;
-                        }
-                    }
-                } // end of sample loop
-                // double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
-                double adc_pedestal = static_cast<double>(adc_min_value);
-                double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
-                adc_peak_values_per_channel[vldb_id * FPGA_CHANNEL_NUMBER + channel].push_back(adc_peak_value_pede_sub);
-            }
-        }
-    }
-    UInt_t global_min_dynamic_range = 1024;
-    for (int channel_global = 0; channel_global < vldb_number * FPGA_CHANNEL_NUMBER; channel_global++) {
-        auto& values = adc_peak_values_per_channel[channel_global];
-        std::sort(values.begin(), values.end());
-        // if more than 1% of the values are at the maximum ADC value, consider this channel as saturated
-        int n_saturated = 0;
-        UInt_t max_adc_value = values.back();
-        for (const auto& val : values) {
-            if (val >= max_adc_value) {
-                n_saturated++;
-            }
-        }
-        double saturated_fraction = static_cast<double>(n_saturated) / static_cast<double>(values.size());
-        if (saturated_fraction > 0.0002 && max_adc_value > 800) {
-            spdlog::warn("Channel {} is considered saturated ({}% of events at max ADC value {})", channel_global, format_decimal(saturated_fraction * 100.0, 2), max_adc_value);
-            if (max_adc_value < global_min_dynamic_range) {
-                global_min_dynamic_range = max_adc_value;
-            }
-        }
-    }
-    spdlog::info("Global minimum dynamic range across all channels is {}", global_min_dynamic_range);
-    // start event loop
-    for (int entry = 0; entry < entry_max; entry++) {
-        input_tree->GetEntry(entry);
-        double adc_sum = 0.0;
-        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-            // channel loop
-            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
-                std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
-                int adc_peak_index = -1;
-                UInt_t adc_peak_value = 0;
-                int adc_peak_ranged_index = -1;
-                UInt_t adc_peak_ranged_value = 0;
-                UInt_t adc_min_value = 1024;
-                adc_pedestal_samples.reserve(3);
-                for (int sample = 0; sample < machine_gun_samples; sample++) {
-                    int idx = sample*FPGA_CHANNEL_NUMBER + channel;
-                    UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
-                    UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
-                    UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
-                    // spdlog::info("Event {} VLDB {} Channel {} Sample {}: ADC {}, ToT {}, ToA {}", entry, vldb_id, channel, sample, adc_value, tot_value, toa_value);
-                    if (sample < 3) {
-                        adc_pedestal_samples.push_back(adc_value);
-                    }
-                    if (adc_value > adc_peak_value) {
-                        adc_peak_value = adc_value;
-                        adc_peak_index = sample;
-                    }
-                    if (sample < adc_peak_max_index) {
-                        if (adc_value < adc_min_value) {
-                            adc_min_value = adc_value;
-                        }
-                    }
-                    // if (sample >= 5 && sample <= 8) {
-                    if (sample >= adc_peak_min_index && sample <= adc_peak_max_index) {
-                        if (adc_value > adc_peak_ranged_value) {
-                            adc_peak_ranged_value = adc_value;
-                            adc_peak_ranged_index = sample;
-                        }
-                    }
-                    // fill ADC waveform histogram
-                    h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel]->Fill(sample, adc_value);
-                    h1_adc_peak_position->Fill(adc_peak_index);
-                } // end of sample loop
-                // calculate the pedestal
-                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
-                //double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
-                double adc_pedestal = static_cast<double>(adc_min_value);
-                double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
-                // if (adc_peak_value_pede_sub > global_min_dynamic_range) {
-                //     adc_peak_value_pede_sub = static_cast<double>(global_min_dynamic_range);
-                // }
-                if (adc_peak_value_pede_sub > 0) {
-                    h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
-                    adc_sum += adc_peak_value_pede_sub;
-                }
-            } // end of channel loop
-        } // end of vldb loop
-        adc_sum_list.push_back(adc_sum); // because we don't know the max adc sum value beforehand
-    } // end of event loop
-    input_root->Close();
-
-    spdlog::info("Finished processing {} events", entry_max);
-
-    // * === Plot to output file =============================================================
-    // * =====================================================================================
     const int NX = 16, NY = 12;
     const int board_cols = 8, board_rows = 4;
 
@@ -392,6 +243,259 @@ int main(int argc, char **argv) {
         spdlog::error("Failed to create output file {}", script_output_file);
         return 1;
     }
+    // * --- Accumulate waveform for each channel ---
+    std::vector<TH2D*> h2_adc_waveforms(vldb_number * FPGA_CHANNEL_NUMBER, nullptr);
+    for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+        for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            std::string h2_name = "h2_adc_waveform_vldb" + std::to_string(vldb_id) + "_ch" + std::to_string(channel);
+            std::string h2_title = "VLDB " + std::to_string(vldb_id) + " Channel " + std::to_string(channel) + " ADC Waveform;Sample Index;ADC Value";
+            h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel] = new TH2D(
+                h2_name.c_str(),
+                h2_title.c_str(),
+                machine_gun_samples, -0.5, machine_gun_samples - 0.5,
+                512, 0, 1024
+            );
+            h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel]->SetDirectory(nullptr);
+        }
+    }
+    // * --- ADC Peak Position Histogram ---
+    TH1D* h1_adc_peak_position = new TH1D("h1_adc_peak_position", "ADC Peak Position;Sample Index;Counts", machine_gun_samples, -0.5, machine_gun_samples - 0.5);
+    h1_adc_peak_position->SetDirectory(nullptr);
+    TH1D* h1_tot_first_position = new TH1D("h1_tot_first_position", "First ToT Position;Sample Index;Counts", machine_gun_samples, -0.5, machine_gun_samples - 0.5);
+    h1_tot_first_position->SetDirectory(nullptr);
+
+    // * --- ADC Peak Value - Channel Correlation Histogram ---
+    TH2D *h2_adc_peak_channel_correlation = new TH2D(
+        "h2_adc_peak_channel_correlation",
+        "ADC Peak Value vs Channel Correlation;Channel;ADC Peak Value",
+        FPGA_CHANNEL_NUMBER, -0.5, FPGA_CHANNEL_NUMBER - 0.5,
+        512, 0, 1024
+    );
+    h2_adc_peak_channel_correlation->SetDirectory(nullptr);
+
+    // * --- ADC Sum distribution Histogram ---
+    std::vector<double> adc_sum_list;
+    adc_sum_list.reserve(entry_max);
+    std::vector<double> tot_first_decoded_list;     // first tot value 
+    tot_first_decoded_list.reserve(entry_max);
+    std::vector<double> adc_in_tot_channels_list;   // sum of adc in the channels that have tot > 0
+    adc_in_tot_channels_list.reserve(entry_max);
+    std::vector<int> tot_valid_channel_count_list;
+    tot_valid_channel_count_list.reserve(entry_max);
+
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
+
+    // start event loop
+    for (int entry = 0; entry < entry_max; entry++) {
+        input_tree->GetEntry(entry);
+        double adc_sum = 0.0;
+        double tot_first_decoded = 0.0;
+        double adc_in_tot_channels = 0.0;
+        int tot_valid_channel_count = 0;
+
+        std::vector<double> adc_peak_values_current_event;
+        std::vector<int> adc_peak_values_chn_number;
+        adc_peak_values_current_event.reserve(vldb_number * FPGA_CHANNEL_NUMBER);
+        adc_peak_values_chn_number.reserve(vldb_number * FPGA_CHANNEL_NUMBER);
+        for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+            // channel loop
+            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                int channel_global = vldb_id * FPGA_CHANNEL_NUMBER + channel;
+                std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
+                int adc_peak_index = -1;
+                UInt_t adc_peak_value = 0;
+                int adc_peak_ranged_index = -1;
+                UInt_t adc_peak_ranged_value = 0;
+                adc_pedestal_samples.reserve(3);
+                UInt_t first_tot_value = 0;
+                int tot_first_index = -1;
+                int tot_count = 0;
+                for (int sample = 0; sample < machine_gun_samples; sample++) {
+                    int idx = sample*FPGA_CHANNEL_NUMBER + channel;
+                    UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
+                    UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
+                    UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
+                    // spdlog::info("Event {} VLDB {} Channel {} Sample {}: ADC {}, ToT {}, ToA {}", entry, vldb_id, channel, sample, adc_value, tot_value, toa_value);
+                    if (sample < 3) {
+                        adc_pedestal_samples.push_back(adc_value);
+                    }
+                    if (adc_value > adc_peak_value) {
+                        adc_peak_value = adc_value;
+                        adc_peak_index = sample;
+                    }
+                    if (sample >= adc_peak_min_index && sample <= adc_peak_max_index) {
+                        if (adc_value > adc_peak_ranged_value) {
+                            adc_peak_ranged_value = adc_value;
+                            adc_peak_ranged_index = sample;
+                        }
+                    }
+                    if (first_tot_value == 0 && tot_value > 0) {
+                        first_tot_value = tot_value;
+                        tot_first_index = sample;
+                    }
+                    if (tot_value > 0) {
+                        tot_count++;
+                    }
+                    // fill ADC waveform histogram
+                    h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel]->Fill(sample, adc_value);
+                    h1_adc_peak_position->Fill(adc_peak_index);
+                    h1_tot_first_position->Fill(tot_first_index);
+                } // end of sample loop
+                // calculate the pedestal
+                // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
+                double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
+
+                if (adc_peak_value_pede_sub > 0) {
+                    h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
+                    adc_sum += adc_peak_value_pede_sub;
+                }
+                // * when the tot is valid and adc is saturated
+                if (first_tot_value > 0 && adc_peak_ranged_value >= adc_saturation_threshold) {
+                    UInt_t tot_decoded = decode_tot_value(first_tot_value);
+                    if (tot_decoded > tot_baseline) {
+                        tot_first_decoded += static_cast<double>(tot_decoded);
+                        double adc_in_channel = adc_peak_value_pede_sub;
+                        adc_in_tot_channels += adc_in_channel;
+                        tot_valid_channel_count++;
+
+                        double tot_adc_equivalent = static_cast<double>(tot_decoded) * tot_adc_slope + tot_adc_intercept;
+                        adc_peak_values_current_event.push_back(tot_adc_equivalent);
+                        adc_peak_values_chn_number.push_back(vldb_id * FPGA_CHANNEL_NUMBER + channel);
+                    } 
+                    else {
+                        adc_peak_values_current_event.push_back(adc_peak_value_pede_sub);
+                        adc_peak_values_chn_number.push_back(vldb_id * FPGA_CHANNEL_NUMBER + channel);
+                    }
+                }
+                else {
+                    adc_peak_values_current_event.push_back(adc_peak_value_pede_sub);
+                    adc_peak_values_chn_number.push_back(vldb_id * FPGA_CHANNEL_NUMBER + channel);
+                }
+            } // end of channel loop
+        } // end of vldb loop
+        // adc_sum_list.push_back(adc_sum);
+        // ! -- Do the clustering here if needed -- !
+        std::vector<int> channel_x_positions;
+        std::vector<int> channel_y_positions;
+        std::vector<double> channel_value_positions;
+        mapping_chn_to_xy(
+            adc_peak_values_current_event,
+            adc_peak_values_chn_number,
+            topo_wave,
+            channel_x_positions,
+            channel_y_positions,
+            &channel_value_positions
+        );
+
+        double cluster_energy_sum = 0.0;
+        if (true) {
+            TH2D* h2_event_display = event_map(
+                channel_value_positions,
+                channel_x_positions,
+                channel_y_positions,
+                NX,
+                NY
+            );
+            if (!h2_event_display) {
+                spdlog::warn("Failed to build event map for entry {} due to inconsistent pixel data", entry);
+                continue;
+            }
+            const std::string canvas_name = "event_display_canvas_" + std::to_string(entry);
+            TCanvas event_display_canvas(canvas_name.c_str(), "Event Display Canvas", 800, 600);
+            h2_event_display->GetXaxis()->SetTitle("X Position");
+            h2_event_display->GetYaxis()->SetTitle("Y Position");
+            std::string canvas_info = "Event " + std::to_string(entry) + " ADC Peak Map";
+            format_2d_hist_canvas(&event_display_canvas, h2_event_display, kBlue+2, CANVAS_TITLE, TESTBEAM_TITLE, canvas_info, true, false, false);
+
+            std::vector<int> cluster_x_list, cluster_y_list, cluster_id_list;
+            std::vector<double> cluster_com_x, cluster_com_y;
+
+            auto clusters = cluster_uniform_grid_topcells(
+                channel_x_positions,
+                channel_y_positions,
+                channel_value_positions,
+                NX,
+                NY,
+                1.0,    // pitch in cm
+                500.0,  // threshold in ADC units
+                20.0,   // neighbor threshold in ADC units
+                false,  // use diagonal neighbors
+                200.0,  // min cluster energy
+                256,    // max cluster size
+                1       // max cluster number
+            );
+
+            if (clusters.empty()) {
+                h2_event_display->Delete();
+                event_display_canvas.Close();
+                continue;
+            }
+            for (const auto& cluster : clusters) {
+                auto cluster_xs = cluster.xs;
+                auto cluster_ys = cluster.ys;
+                cluster_x_list.insert(cluster_x_list.end(), cluster_xs.begin(), cluster_xs.end());
+                cluster_y_list.insert(cluster_y_list.end(), cluster_ys.begin(), cluster_ys.end());
+                cluster_com_x.push_back(cluster.x_cm_cell);
+                cluster_com_y.push_back(cluster.y_cm_cell);
+                cluster_energy_sum += cluster.sumE;
+                break; // only consider the first cluster
+            }
+    
+            label_pixels(&event_display_canvas, cluster_x_list, cluster_y_list);
+            label_markers(&event_display_canvas, cluster_com_x, cluster_com_y);
+
+            if (entry < 10) {
+                output_root->cd();
+                event_display_canvas.Write();
+            }
+            h2_event_display->Delete();
+            event_display_canvas.Close();
+
+        } // end of first 10 events
+        if (cluster_energy_sum > 0.0) {
+            adc_sum_list.push_back(cluster_energy_sum); // because we don't know the max adc sum value beforehand
+        }
+
+        tot_first_decoded_list.push_back(tot_first_decoded);
+        adc_in_tot_channels_list.push_back(adc_in_tot_channels);
+        tot_valid_channel_count_list.push_back(tot_valid_channel_count);
+    } // end of event loop
+    input_root->Close();
+
+    spdlog::info("Finished processing {} events", entry_max);
+
+    // * === Plot to output file =============================================================
+    // * =====================================================================================
+    // const int NX = 16, NY = 12;
+    // const int board_cols = 8, board_rows = 4;
+
+    // auto chan2pad = build_chan2pad_LUT(
+    //     vldb_number, FPGA_CHANNEL_NUMBER,
+    //     NX, NY, board_cols, board_rows,
+    //     sipm_board, board_loc, board_rotation, board_flip
+    // );
+
+    // MosaicTopology topo_wave;
+    // topo_wave.NX = NX;
+    // topo_wave.NY = NY;
+    // topo_wave.vldb_number = vldb_number;
+    // topo_wave.channels_per_vldb = FPGA_CHANNEL_NUMBER;
+    // topo_wave.reverse_row = true;
+    // topo_wave.minimalist_axis = true;
+    // topo_wave.th2_logz = true;
+    // topo_wave.chan2pad = chan2pad;
+
+    // MosaicTopology topo_ped_median = topo_wave;
+    // topo_ped_median = topo_wave;
+    // topo_ped_median.th2_logz = true;
+
+    // auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
+    // if (output_root->IsZombie()) {
+    //     spdlog::error("Failed to create output file {}", script_output_file);
+    //     return 1;
+    // }
 
     std::string annotation_canvas_title = CANVAS_TITLE;
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
@@ -428,6 +532,13 @@ int main(int argc, char **argv) {
     adc_peak_position_canvas.Write();
     adc_peak_position_canvas.Close();
 
+    TCanvas tot_first_position_canvas("tot_first_position_canvas", "ToT First Position Canvas", 800, 600);
+    canvas_info = "ToT First Position Distribution";
+    format_1d_hist_canvas(&tot_first_position_canvas, h1_tot_first_position, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    tot_first_position_canvas.Print(out_pdf.c_str());
+    tot_first_position_canvas.Write();
+    tot_first_position_canvas.Close();
+
     TCanvas adc_peak_channel_correlation_canvas("adc_peak_channel_correlation_canvas", "ADC Peak Channel Correlation Canvas", 800, 600);
     canvas_info = "ADC Peak Value vs Channel Correlation";
     format_2d_hist_canvas(&adc_peak_channel_correlation_canvas, h2_adc_peak_channel_correlation, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
@@ -435,22 +546,66 @@ int main(int argc, char **argv) {
     adc_peak_channel_correlation_canvas.Write();
     adc_peak_channel_correlation_canvas.Close();
 
+    double mean_avg = 0.0;
+    double mean_err_sys = 0.0;
+    double mean_err_stat = 0.0;
+    double sigma_avg = 0.0;
+    double sigma_err_sys = 0.0;
+    double sigma_err_stat = 0.0;
+    double sigma_err = 0.0;
+    double resolution = 0.0;
+    double resolution_err = 0.0;
+
+    double cb_mean_avg = 0.0;
+    double cb_mean_err_sys = 0.0;
+    double cb_mean_err_stat = 0.0;
+    double cb_sigma_avg = 0.0;
+    double cb_sigma_err_sys = 0.0;
+    double cb_sigma_err_stat = 0.0;
+    double cb_effective_sigma_avg = 0.0;
+    double cb_effective_sigma_err_sys = 0.0;
+    double cb_effective_sigma_err_stat = 0.0;
+    double cb_resolution_avg = 0.0;
+    double cb_resolution_err = 0.0;
+    double cb_effective_resolution = 0.0;
+    double cb_effective_resolution_err = 0.0;
+    double cb_sigma_err = 0.0;
+
+    double cb_tot_mean_avg = 0.0;
+    double cb_tot_mean_err_sys = 0.0;
+    double cb_tot_mean_err_stat = 0.0;
+    double cb_tot_sigma_avg = 0.0;
+    double cb_tot_sigma_err_sys = 0.0;
+    double cb_tot_sigma_err_stat = 0.0;
+    double cb_tot_effective_sigma_avg = 0.0;
+    double cb_tot_effective_sigma_err_sys = 0.0;
+    double cb_tot_effective_sigma_err_stat = 0.0;
+    double cb_tot_resolution_avg = 0.0;
+    double cb_tot_resolution_err = 0.0;
+    double cb_tot_effective_resolution = 0.0;
+
+    auto hist_color = kMagenta+2;
+
     // ! -- Raw ADC Sum distribution Histogram ---
     // ! =====================================================================================
-    TCanvas adc_sum_distribution_canvas("adc_sum_distribution_canvas", "ADC Sum Distribution Canvas", 800, 600);
-    canvas_info = "ADC Sum Distribution, Run " + script_input_run_number;
+    if (adc_sum_list.empty()) {
+        spdlog::warn("ADC sum list is empty, skipping ADC/ToT summary plots");
+    } else {
+        TCanvas adc_sum_distribution_canvas("adc_sum_distribution_canvas", "ADC Sum Distribution Canvas", 800, 600);
+        canvas_info = "ADC Sum Distribution, Run " + script_input_run_number;
     // determine 90% percentile max value for better visualization
-    auto sorted_adc_sum_list = adc_sum_list;
-    std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
-    double adc_sum_90pct_max = sorted_adc_sum_list[static_cast<size_t>(0.9 * sorted_adc_sum_list.size()) - 1];
+        auto sorted_adc_sum_list = adc_sum_list;
+        std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
+        double adc_sum_90pct_max = sorted_adc_sum_list[static_cast<size_t>(0.9 * sorted_adc_sum_list.size()) - 1];
     // create histogram and fill
-    double x_hist_max = adc_sum_90pct_max * 1.8;
+    double x_hist_max = adc_sum_90pct_max * 3.6;
     double x_hist_min = 0.0;
     const double bin_width = 300.0;
     int n_bins = static_cast<int>((x_hist_max - x_hist_min) / bin_width);
     if (n_bins < 100) n_bins = 100; // at least 100 bins
     TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", n_bins, x_hist_min, x_hist_max);
     for (const auto& adc_sum_value : adc_sum_list) {
+        if (adc_sum_value <= 0.0) continue; // skip invalid values
         h1_adc_sum_distribution->Fill(adc_sum_value);
     }
     format_1d_hist_canvas(&adc_sum_distribution_canvas, h1_adc_sum_distribution, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
@@ -562,8 +717,8 @@ int main(int argc, char **argv) {
     format_1d_hist_canvas(&adc_sum_distribution_gausfit_canvas, h1_adc_sum_distribution_gausfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
 
     // define the fitting range
-    const std::vector<double> fit_range_sigmas = {2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5}; // in sigma
-    const std::vector<double> fit_range_offsets = {-0.4, -0.2, 0.0, 0.2, 0.4}; // in sigma
+    std::vector<double> fit_range_sigmas = {2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5}; // in sigma
+    std::vector<double> fit_range_offsets = {-0.4, -0.2, 0.0, 0.2, 0.4}; // in sigma
     std::vector<double> fit_results_means;
     std::vector<double> fit_results_mean_errs;
     std::vector<double> fit_results_sigmas;
@@ -608,13 +763,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    double mean_avg=0.0;
-    double mean_err_sys=0.0;
-    double mean_err_stat=0.0;
-    double sigma_avg=0.0;
-    double sigma_err_sys=0.0;
-    double sigma_err_stat=0.0;
-
     spdlog::info("Calculating mean and sigma from multiple fit results...");
     mean_sigma_list_calculator(
         fit_results_means,
@@ -631,10 +779,10 @@ int main(int argc, char **argv) {
     spdlog::info("Mean: {} +/- {} (stat) +/- {} (sys)", mean_avg, mean_err_stat, mean_err_sys);
     spdlog::info("Sigma: {} +/- {} (stat) +/- {} (sys)", sigma_avg, sigma_err_stat, sigma_err_sys);
 
-    double resolution = (sigma_avg / mean_avg) * 100.0;
+    resolution = (sigma_avg / mean_avg) * 100.0;
     double mean_err = std::sqrt(mean_err_stat * mean_err_stat + mean_err_sys * mean_err_sys);
-    double sigma_err = std::sqrt(sigma_err_stat * sigma_err_stat + sigma_err_sys * sigma_err_sys);
-    double resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
+    sigma_err = std::sqrt(sigma_err_stat * sigma_err_stat + sigma_err_sys * sigma_err_sys);
+    resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
     spdlog::info("Calculated Resolution: {} % +/- {} %", resolution, resolution_err);
 
     // add additional statistics
@@ -682,135 +830,11 @@ int main(int argc, char **argv) {
     TH1D* h1_adc_sum_distribution_cbfit = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_cbfit");
     format_1d_hist_canvas(&adc_sum_distribution_cbfit_canvas, h1_adc_sum_distribution_cbfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
 
-    // use the same fitting range as gaussian fit
-    std::vector<double> cb_fit_results_means;
-    std::vector<double> cb_fit_results_mean_errs;
-    std::vector<double> cb_fit_results_sigmas;
-    std::vector<double> cb_fit_results_sigma_errs;
-    std::vector<double> cb_fit_results_eff_sigmas;
-    std::vector<double> cb_fit_results_eff_sigma_errs;
-    std::vector<double> cb_fit_results_alphas;
-    std::vector<double> cb_fit_results_nbs;
-    std::vector<double> cb_fit_results_chi2s;
-    std::vector<double> cb_fit_results_ndfs;
+    crystalball_fit_th1d(adc_sum_distribution_cbfit_canvas, *h1_adc_sum_distribution_cbfit, fit_range_sigmas, fit_range_offsets, hist_color, cb_mean_avg, cb_mean_err_sys, cb_mean_err_stat, cb_sigma_avg, cb_sigma_err_sys, cb_sigma_err_stat, cb_resolution_avg, cb_resolution_err);
 
-    for (const auto& range_sigma : fit_range_sigmas) {
-        for (const auto& range_offset : fit_range_offsets) {
-            double fit_min = pre_fit_2_mean - range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
-            double fit_max = pre_fit_2_mean + range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
-            if (fit_min < 0) fit_min = 0;
-            TF1 *cb_fit_real = new TF1("cb_fit_real", crystallball_left, fit_min, fit_max, 5);
-            // set initial values
-            cb_fit_real->SetParameter(0, pre_fit_2_amp);      // N
-            cb_fit_real->SetParameter(1, 1.5);                // alpha
-            cb_fit_real->SetParameter(2, 5.0);                // n
-            cb_fit_real->SetParameter(3, pre_fit_2_mean);     // mean
-            cb_fit_real->SetParameter(4, pre_fit_2_sigma);    // sigma
-
-            // cb_fit_real->SetParLimits(1, 1.5, 10.0); // alpha
-            // cb_fit_real->SetParLimits(2, 5.0, 50.0); // n
-            h1_adc_sum_distribution_cbfit->Fit(cb_fit_real, "RNQ+");
-
-            double fit_mean = cb_fit_real->GetParameter(3);
-            double fit_mean_err = cb_fit_real->GetParError(3);
-            double fit_sigma = cb_fit_real->GetParameter(4);
-            double fit_sigma_err = cb_fit_real->GetParError(4);
-            double fit_alpha = cb_fit_real->GetParameter(1);
-            double fit_n = cb_fit_real->GetParameter(2);
-
-            double fit_chi2 = cb_fit_real->GetChisquare();
-            double fit_ndf = cb_fit_real->GetNDF();
-
-            cb_fit_results_means.push_back(fit_mean);
-            cb_fit_results_mean_errs.push_back(fit_mean_err);
-            cb_fit_results_sigmas.push_back(fit_sigma);
-            cb_fit_results_sigma_errs.push_back(fit_sigma_err);
-            cb_fit_results_alphas.push_back(fit_alpha);
-            cb_fit_results_nbs.push_back(fit_n);
-            cb_fit_results_chi2s.push_back(fit_chi2);
-            cb_fit_results_ndfs.push_back(fit_ndf);
-
-            // calculate effective sigma (68.3% quantile)
-            // double q16 = quantile_from_tf1(cb_fit_real, 0.158655253931, h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmin(), h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmax());
-            // double q84 = quantile_from_tf1(cb_fit_real, 0.841344746069, h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmin(), h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmax());
-            // double effective_sigma = (q84 - q16) / 2.0;
-            // double effective_sigma_err = fit_sigma_err;
-
-            // define effective sigma as 67% area for better stability
-            double prob[2] = {0.158655253931, 0.841344746069};
-            double quantiles[2];
-            h1_adc_sum_distribution_cbfit->GetQuantiles(2, quantiles, prob);
-            double effective_sigma = (quantiles[1] - quantiles[0]) / 2.0;
-            // give gaussian estimate for effective sigma error
-            double effective_sigma_err = fit_sigma_err;
-
-            // define effective sigma from RMS 90
-            // auto r = computeMeanRMS90(h1_adc_sum_distribution_cbfit);
-            // double effective_sigma = r.sigma_gauss;
-            // double effective_sigma_err = r.err_sigma_gauss;
-
-            cb_fit_results_eff_sigmas.push_back(effective_sigma);
-            cb_fit_results_eff_sigma_errs.push_back(effective_sigma_err);
-
-            cb_fit_real->SetLineColorAlpha(kMagenta+2, 0.2);
-            cb_fit_real->SetLineWidth(2);
-            cb_fit_real->Draw("same");
-
-            spdlog::info("CB Fit Range Sigma: {}, Offset: {} => Mean: {}, Sigma: {}, Alpha: {}, N: {}, effective Sigma: {}, Chi2/NDF: {}/{}", 
-                range_sigma, range_offset, fit_mean, fit_sigma, fit_alpha, fit_n, effective_sigma, fit_chi2, fit_ndf
-            );
-        }
-    }
-
-    double cb_mean_avg=0.0;
-    double cb_mean_err_sys=0.0;
-    double cb_mean_err_stat=0.0;
-    double cb_sigma_avg=0.0;
-    double cb_sigma_err_sys=0.0;
-    double cb_sigma_err_stat=0.0;
-    double cb_effective_sigma_avg=0.0;
-    double cb_effective_sigma_err_sys=0.0;
-    double cb_effective_sigma_err_stat=0.0;
-
-    spdlog::info("Calculating mean and sigma from multiple CB fit results...");
-    mean_sigma_list_calculator(
-        cb_fit_results_means,
-        cb_fit_results_mean_errs,
-        cb_fit_results_sigmas,
-        cb_fit_results_sigma_errs,
-        cb_mean_avg,
-        cb_mean_err_sys,
-        cb_mean_err_stat,
-        cb_sigma_avg,
-        cb_sigma_err_sys,
-        cb_sigma_err_stat
-    );
-
-    // do another round for effective sigma
-    mean_sigma_list_calculator(
-        cb_fit_results_means,
-        cb_fit_results_mean_errs,
-        cb_fit_results_eff_sigmas,
-        cb_fit_results_eff_sigma_errs,
-        cb_effective_sigma_avg,
-        cb_effective_sigma_err_sys,
-        cb_effective_sigma_err_stat,
-        cb_effective_sigma_avg,
-        cb_effective_sigma_err_sys,
-        cb_effective_sigma_err_stat
-    );
-    spdlog::info("CB Mean: {} +/- {} (stat) +/- {} (sys)", cb_mean_avg, cb_mean_err_stat, cb_mean_err_sys);
-    spdlog::info("CB Sigma: {} +/- {} (stat) +/- {} (sys)", cb_sigma_avg, cb_sigma_err_stat, cb_sigma_err_sys);
-    spdlog::info("CB Effective Sigma: {} +/- {} (stat) +/- {} (sys)", cb_effective_sigma_avg, cb_effective_sigma_err_stat, cb_effective_sigma_err_sys);
-    double cb_resolution = (cb_sigma_avg / cb_mean_avg) * 100.0;
-    double cb_mean_err = std::sqrt(cb_mean_err_stat * cb_mean_err_stat + cb_mean_err_sys * cb_mean_err_sys);
-    double cb_sigma_err = std::sqrt(cb_sigma_err_stat * cb_sigma_err_stat + cb_sigma_err_sys * cb_sigma_err_sys);
-    double cb_resolution_err = cb_resolution * std::sqrt( (cb_sigma_err / cb_sigma_avg) * (cb_sigma_err / cb_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
-    spdlog::info("Calculated CB Resolution: {} % +/- {} %", cb_resolution, cb_resolution_err);
-    double cb_effective_resolution = (cb_effective_sigma_avg / cb_mean_avg) * 100.0;
-    double cb_effective_sigma_err = std::sqrt(cb_effective_sigma_err_stat * cb_effective_sigma_err_stat + cb_effective_sigma_err_sys * cb_effective_sigma_err_sys);
-    double cb_effective_resolution_err = cb_effective_resolution * std::sqrt( (cb_effective_sigma_err / cb_effective_sigma_avg) * (cb_effective_sigma_err / cb_effective_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
-    spdlog::info("Calculated CB Effective Resolution: {} % +/- {} %", cb_effective_resolution, cb_effective_resolution_err);
+    cb_effective_resolution = (cb_effective_sigma_avg / cb_mean_avg) * 100.0;
+    cb_effective_resolution_err = cb_effective_resolution * std::sqrt( (cb_effective_sigma_err_stat / cb_effective_sigma_avg) * (cb_effective_sigma_err_stat / cb_effective_sigma_avg) + (cb_mean_err_stat / cb_mean_avg) * (cb_mean_err_stat / cb_mean_avg) );
+    cb_sigma_err = std::sqrt(cb_sigma_err_stat * cb_sigma_err_stat + cb_sigma_err_sys * cb_sigma_err_sys);
 
     // add additional statistics
     TPaveText *pave_stats_cbfit = new TPaveText(0.55,0.4,0.90,0.88,"NDC");
@@ -835,7 +859,7 @@ int main(int argc, char **argv) {
     pave_stats_cbfit->AddText(cb_sigma_text.c_str());
     std::string cb_sigma_sys_text = "         #pm " + cb_sigma_err_sys_str + " (sys)";
     pave_stats_cbfit->AddText(cb_sigma_sys_text.c_str());
-    std::string cb_resolution_str = format_decimal(cb_resolution);
+    std::string cb_resolution_str = format_decimal(cb_resolution_avg);
     std::string cb_resolution_err_str = format_decimal(cb_resolution_err);
     std::string cb_resolution_text = "  Core Resolution: " + cb_resolution_str + " % #pm " + cb_resolution_err_str + " %";
     pave_stats_cbfit->AddText(cb_resolution_text.c_str());
@@ -843,10 +867,10 @@ int main(int argc, char **argv) {
     std::string cb_effective_sigma_err_stat_str = format_decimal(cb_effective_sigma_err_stat);
     std::string cb_effective_sigma_err_sys_str = format_decimal(cb_effective_sigma_err_sys);
     std::string cb_effective_sigma_text = "  Eff Sigma: " + cb_effective_sigma_str;
-    // pave_stats_cbfit->AddText(cb_effective_sigma_text.c_str());
+    pave_stats_cbfit->AddText(cb_effective_sigma_text.c_str());
     std::string cb_effective_resolution_str = format_decimal(cb_effective_resolution);
     std::string cb_effective_resolution_text = "  Eff Resolution: " + cb_effective_resolution_str + " %";
-    // pave_stats_cbfit->AddText(cb_effective_resolution_text.c_str());
+    pave_stats_cbfit->AddText(cb_effective_resolution_text.c_str());
     pave_stats_cbfit->Draw();
 
     adc_sum_distribution_cbfit_canvas.Modified();
@@ -856,10 +880,92 @@ int main(int argc, char **argv) {
     adc_sum_distribution_cbfit_canvas.SaveAs(cbfit_pic_file_name.c_str());
     adc_sum_distribution_cbfit_canvas.Write();
     adc_sum_distribution_cbfit_canvas.Close();
-
-
     // ! =====================================================================================
 
+    // ! do the same crystal ball fit but for tot and adc combined
+    TCanvas adc_in_tot_channels_distribution_cbfit_canvas("adc_in_tot_channels_distribution_cbfit_canvas", "ADC in ToT Channels Distribution CB Fit Canvas", 800, 600);
+    canvas_info = "Crystal Ball Fitted ADC and ToT Combined, Run " + script_input_run_number;
+    // create histogram and fill
+    double x_hist_max_adc_in_tot = adc_sum_90pct_max * 3.6;
+    double x_hist_min_adc_in_tot = 0.0;
+    TH1D* h1_adc_tot_combined = new TH1D("h1_adc_tot_combined", "ADC in ToT Channels Distribution;ADC Sum in ToT Channels;Counts", n_bins, x_hist_min_adc_in_tot, x_hist_max_adc_in_tot);
+    TH1D* h1_adc_sums_compared = new TH1D("h1_adc_sums_compared", "ADC Sum Comparison;ADC Sum;Counts", n_bins, x_hist_min, x_hist_max);
+    for (int i = 0; i < adc_sum_list.size(); i++) {
+        auto adc_in_tot_value = adc_in_tot_channels_list[i];
+        auto adc_sum_value = adc_sum_list[i];
+        auto tot_value = tot_first_decoded_list[i];
+        auto tot_valid_channel_count = tot_valid_channel_count_list[i];
+        double adc_tot_combined = double(adc_sum_value) - double(adc_in_tot_value) + double(tot_value) * tot_adc_slope + tot_adc_intercept * tot_valid_channel_count;
+        h1_adc_tot_combined->Fill(adc_tot_combined);
+        h1_adc_sums_compared->Fill(adc_sum_value);
+    }
+
+    // rescale the y axis
+    double y_max = h1_adc_tot_combined->GetMaximum();
+    if (h1_adc_sums_compared->GetMaximum() > y_max) {
+        y_max = h1_adc_sums_compared->GetMaximum();
+    }
+    h1_adc_sums_compared->SetMaximum(y_max * 1.3);
+    h1_adc_tot_combined->SetMaximum(y_max * 1.3);
+    
+    TH1D* h1_adc_tot_combined_cbfit = (TH1D*) h1_adc_tot_combined->Clone("h1_adc_tot_combined_cbfit");
+    format_1d_hist_canvas(&adc_in_tot_channels_distribution_cbfit_canvas, h1_adc_tot_combined_cbfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+        crystalball_fit_th1d(adc_in_tot_channels_distribution_cbfit_canvas, *h1_adc_tot_combined_cbfit, fit_range_sigmas, fit_range_offsets, hist_color, cb_tot_mean_avg, cb_tot_mean_err_sys, cb_tot_mean_err_stat, cb_tot_sigma_avg, cb_tot_sigma_err_sys, cb_tot_sigma_err_stat, cb_tot_resolution_avg, cb_tot_resolution_err);
+        if (cb_tot_mean_avg != 0.0) {
+            cb_tot_effective_resolution = (cb_tot_effective_sigma_avg / cb_tot_mean_avg) * 100.0;
+        } else {
+            cb_tot_effective_resolution = 0.0;
+        }
+
+
+    // draw adc only for comparison
+    TH1D* h1_adc_sums_compared_cbfit = (TH1D*) h1_adc_sums_compared->Clone("h1_adc_sums_compared_cbfit");
+    h1_adc_sums_compared_cbfit->SetLineColor(kGreen+2);;
+    h1_adc_sums_compared_cbfit->SetLineWidth(2);
+    h1_adc_sums_compared_cbfit->Draw("same");
+
+    // add additional statistics
+    TPaveText *pave_stats_cbfit_tot = new TPaveText(0.55,0.4,0.90,0.88,"NDC");
+    pave_stats_cbfit_tot->SetFillColorAlpha(kWhite,0.0);
+    pave_stats_cbfit_tot->SetBorderSize(0);
+    pave_stats_cbfit_tot->SetTextAlign(31);
+    pave_stats_cbfit_tot->SetTextFont(42);
+    pave_stats_cbfit_tot->SetTextSize(0.03);    
+    pave_stats_cbfit_tot->SetTextColor(kMagenta+2);
+    pave_stats_cbfit_tot->AddText("Crystal Ball Fit Results (ADC + ToT):");
+    std::string cb_tot_mean_str = format_decimal(cb_tot_mean_avg);
+    std::string cb_tot_mean_err_stat_str = format_decimal(cb_tot_mean_err_stat);
+    std::string cb_tot_mean_err_sys_str = format_decimal(cb_tot_mean_err_sys);
+    std::string cb_tot_sigma_str = format_decimal(cb_tot_sigma_avg);
+    std::string cb_tot_sigma_err_stat_str = format_decimal(cb_tot_sigma_err_stat);
+    std::string cb_tot_sigma_err_sys_str = format_decimal(cb_tot_sigma_err_sys);
+    std::string cb_tot_mean_text = "  Mean: " + cb_tot_mean_str + " #pm " + cb_tot_mean_err_stat_str + " (stat)";
+    pave_stats_cbfit_tot->AddText(cb_tot_mean_text.c_str());
+    std::string cb_tot_mean_sys_text = "        #pm " + cb_tot_mean_err_sys_str + " (sys)"; 
+    pave_stats_cbfit_tot->AddText(cb_tot_mean_sys_text.c_str());
+    std::string cb_tot_sigma_text = "  Sigma: " + cb_tot_sigma_str + " #pm " + cb_tot_sigma_err_stat_str + " (stat)";
+    pave_stats_cbfit_tot->AddText(cb_tot_sigma_text.c_str());
+    std::string cb_tot_sigma_sys_text = "         #pm " + cb_tot_sigma_err_sys_str + " (sys)";
+    pave_stats_cbfit_tot->AddText(cb_tot_sigma_sys_text.c_str());
+    std::string cb_tot_resolution_str = format_decimal(cb_tot_resolution_avg);
+    std::string cb_tot_resolution_err_str = format_decimal(cb_tot_resolution_err);
+    std::string cb_tot_resolution_text = "  Core Resolution: " + cb_tot_resolution_str + " % #pm " + cb_tot_resolution_err_str + " %";
+    pave_stats_cbfit_tot->AddText(cb_tot_resolution_text.c_str());
+    pave_stats_cbfit_tot->Draw();
+
+        adc_in_tot_channels_distribution_cbfit_canvas.Modified();
+        adc_in_tot_channels_distribution_cbfit_canvas.Update();
+        adc_in_tot_channels_distribution_cbfit_canvas.Print(out_pdf.c_str());
+        std::string cbfit_tot_pic_file_name = script_output_file.substr(0, script_input_file.find_last_of(".")) + "_cbfit_adc_tot.pdf";
+        adc_in_tot_channels_distribution_cbfit_canvas.SaveAs(cbfit_tot_pic_file_name.c_str());
+        adc_in_tot_channels_distribution_cbfit_canvas.Write();
+        adc_in_tot_channels_distribution_cbfit_canvas.Close();
+
+        // save h1_adc_tot_combined to the output root file
+        output_root->cd();
+        h1_adc_tot_combined->Write();
+    }
+    // scan over different ToT ADC slope and intercept values
 
     // end of pdf, create dummy canvas
     TCanvas end_canvas("end_canvas", "End Canvas", 800, 600);
@@ -879,7 +985,7 @@ int main(int argc, char **argv) {
     TParameter<double> param_cb_fit_mean("cb_fit_mean", cb_mean_avg);
     TParameter<double> param_cb_fit_sigma("cb_fit_sigma", cb_sigma_avg);
     TParameter<double> param_cb_fit_effective_sigma("cb_fit_effective_sigma", cb_effective_sigma_avg);
-    TParameter<double> param_cb_fit_resolution("cb_fit_resolution", cb_resolution);
+    TParameter<double> param_cb_fit_resolution("cb_fit_resolution", cb_resolution_avg);
     TParameter<double> param_cb_fit_effective_resolution("cb_fit_effective_resolution", cb_effective_resolution);
     TParameter<double> param_cb_fit_mean_err_stat("cb_fit_mean_err_stat", cb_mean_err_stat);
     TParameter<double> param_cb_fit_mean_err_sys("cb_fit_mean_err_sys", cb_mean_err_sys);
@@ -889,6 +995,30 @@ int main(int argc, char **argv) {
     TParameter<double> param_cb_fit_effective_sigma_err_sys("cb_fit_effective_sigma_err_sys", cb_effective_sigma_err_sys);
     TParameter<double> param_cb_fit_resolution_err("cb_fit_resolution_err", cb_resolution_err);
     TParameter<double> param_cb_fit_effective_resolution_err("cb_fit_effective_resolution_err", cb_effective_resolution_err);
+
+    // double cb_tot_mean_avg=0.0;
+    // double cb_tot_mean_err_sys=0.0;
+    // double cb_tot_mean_err_stat=0.0;
+    // double cb_tot_sigma_avg=0.0;
+    // double cb_tot_sigma_err_sys=0.0;
+    // double cb_tot_sigma_err_stat=0.0;
+    // double cb_tot_effective_sigma_avg=0.0;
+    // double cb_tot_effective_sigma_err_sys=0.0;
+    // double cb_tot_effective_sigma_err_stat=0.0;
+    // double cb_tot_resolution_avg=0.0;
+    // double cb_tot_resolution_err=0.0;
+    TParameter<double> param_tot_cb_fit_mean("tot_cb_fit_mean", cb_tot_mean_avg);
+    TParameter<double> param_tot_cb_fit_sigma("tot_cb_fit_sigma", cb_tot_sigma_avg);
+    TParameter<double> param_tot_cb_fit_effective_sigma("tot_cb_fit_effective_sigma", cb_tot_effective_sigma_avg);
+    TParameter<double> param_tot_cb_fit_resolution("tot_cb_fit_resolution", cb_tot_resolution_avg);
+    TParameter<double> param_tot_cb_fit_effective_resolution("tot_cb_fit_effective_resolution", cb_tot_effective_resolution);
+    TParameter<double> param_tot_cb_fit_mean_err_stat("tot_cb_fit_mean_err_stat", cb_tot_mean_err_stat);
+    TParameter<double> param_tot_cb_fit_mean_err_sys("tot_cb_fit_mean_err_sys", cb_tot_mean_err_sys);
+    TParameter<double> param_tot_cb_fit_sigma_err_stat("tot_cb_fit_sigma_err_stat", cb_tot_sigma_err_stat);
+    TParameter<double> param_tot_cb_fit_sigma_err_sys("tot_cb_fit_sigma_err_sys", cb_tot_sigma_err_sys);
+    TParameter<double> param_tot_cb_fit_effective_sigma_err_stat("tot_cb_fit_effective_sigma_err_stat", cb_tot_effective_sigma_err_stat);
+    TParameter<double> param_tot_cb_fit_effective_sigma_err_sys("tot_cb_fit_effective_sigma_err_sys", cb_tot_effective_sigma_err_sys);
+    TParameter<double> param_tot_cb_fit_resolution_err("tot_cb_fit_resolution_err", cb_tot_resolution_err);
 
     output_root->cd();
     param_gaus_fit_mean.Write();
@@ -913,7 +1043,19 @@ int main(int argc, char **argv) {
     param_cb_fit_effective_sigma_err_sys.Write();
     param_cb_fit_resolution_err.Write();
     param_cb_fit_effective_resolution_err.Write();
-    
+
+    param_tot_cb_fit_mean.Write();
+    param_tot_cb_fit_sigma.Write();
+    param_tot_cb_fit_effective_sigma.Write();
+    param_tot_cb_fit_resolution.Write();
+    param_tot_cb_fit_effective_resolution.Write();
+    param_tot_cb_fit_mean_err_stat.Write();
+    param_tot_cb_fit_mean_err_sys.Write();
+    param_tot_cb_fit_sigma_err_stat.Write();
+    param_tot_cb_fit_sigma_err_sys.Write();
+    param_tot_cb_fit_effective_sigma_err_stat.Write();
+    param_tot_cb_fit_effective_sigma_err_sys.Write();
+    param_tot_cb_fit_resolution_err.Write();
 
     output_root->Close();
 
@@ -921,26 +1063,4 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-// inline double crystallball_left(double *x, double *par) {
-//     // par[0] = A
-//     // par[1] = a
-//     // par[2] = n
-//     // par[3] = mean
-//     // par[4] = sigma
-//     const double N      = par[0];
-//     const double alpha  = par[1];
-//     const double n      = par[2];
-//     const double mean   = par[3];
-//     const double sigma  = par[4];
-
-//     double z = (x[0] - mean) / sigma;
-//     if (z > -alpha) {
-//         return N * exp(-0.5 * z * z);
-//     } else {
-//         double A = pow(n / fabs(alpha), n) * exp(-0.5 * alpha * alpha);
-//         double B = n / fabs(alpha) - fabs(alpha);
-//         return N * A * pow(B - z, -n);
-//     }
-// }
 

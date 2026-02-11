@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
         spdlog::warn("Output file {} already exists!", script_output_file);
     }
 
-    std::string mapping_json_file = "config/mapping_Oct2025.json";
+    std::string mapping_json_file = "config/mapping_Feb2026.json";
     std::ifstream mapping_json_ifs(mapping_json_file);
     if (!mapping_json_ifs.is_open()) {
         spdlog::error("Failed to open mapping json file {}", mapping_json_file);
@@ -407,6 +407,17 @@ int main(int argc, char **argv) {
         h2d_channel_waveform_list.push_back(h2d_channel_waveform);
     }
 
+    // * --- Channel-wise raw sample waveform -------------------------------------------------
+    std::vector<TH2D*> h2d_channel_raw_waveform_list;
+    for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
+        std::string hist_name = "h2d_channel_raw_waveform_ch" + std::to_string(i);
+        TH2D *h2d_channel_raw_waveform = new TH2D(hist_name.c_str(), (hist_name + ";Time Sample;Raw ADC Value").c_str(),
+                                              machine_gun_samples, 0, machine_gun_samples,
+                                              256, 0, 1024);
+        h2d_channel_raw_waveform->SetDirectory(nullptr);
+        h2d_channel_raw_waveform_list.push_back(h2d_channel_raw_waveform);
+    }
+
     // * --- Channel-seed channel ToA correlation histogram ------------------------------
     std::vector<TH2D*> h2d_channel_seed_corr_list;
     for (int i = 0; i < FPGA_CHANNEL_NUMBER * vldb_number; i++) {
@@ -488,10 +499,13 @@ int main(int argc, char **argv) {
         double adc_toa_on_sum = 0.0;
         double adc_weighted_toa_sum = 0.0;
         double adc_weight_sum = 0.0;
+        double leading_toa = 0.0;
         std::vector<double> toa_list_this_event;
         std::vector<double> adc_list_this_event;
+        std::vector<double> tot_list_this_event;
         toa_list_this_event.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
         adc_list_this_event.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
+        tot_list_this_event.reserve(FPGA_CHANNEL_NUMBER * vldb_number);
 
         // get the toa of the seed channel
         double seed_channel_toa_ns = -1.0;
@@ -574,6 +588,8 @@ int main(int argc, char **argv) {
                 UInt_t toa_first_value = 0;
                 int toa_first_index = -1;
 
+                double tot_first_value = 0.0;
+
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int idx = sample*FPGA_CHANNEL_NUMBER + channel;
                     UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
@@ -602,6 +618,9 @@ int main(int argc, char **argv) {
                     }
                     if (tot_value > 0) {
                         tot_showup_times++;
+                        if (tot_first_value == 0.0) {
+                            tot_first_value = static_cast<double>(tot_value);
+                        }
                     }
                 } // end of sample loop
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
@@ -650,7 +669,11 @@ int main(int argc, char **argv) {
                     h2d_toa_code_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(toa_first_value, toa_ns);
 
                     if (toa_first_value > 0) {
+                        if (tot_first_value >= 512.0) {
+                            tot_first_value = (tot_first_value - 512.0) * 8.0; // example TOT to ns conversion, should be replaced with actual calibration
+                        }
                         toa_list_this_event.push_back(toa_ns);
+                        tot_list_this_event.push_back(tot_first_value);
                         adc_list_this_event.push_back(adc_peak_value_pede_sub);
                         adc_weighted_toa_sum += toa_ns * adc_peak_value_pede_sub;
                         adc_weight_sum += adc_peak_value_pede_sub;
@@ -660,6 +683,7 @@ int main(int argc, char **argv) {
                             double _sample_time_ns = static_cast<double>(_sample_machinegun) * 25.0 - toa_ns;
                             double _adc_value = static_cast<double>(adc_samples[_sample_machinegun]);
                             h2d_channel_waveform_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(_sample_time_ns, _adc_value);
+                            h2d_channel_raw_waveform_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(_sample_machinegun, _adc_value);
                         }
 
                         h2d_channel_seed_corr_list[channel + vldb_id * FPGA_CHANNEL_NUMBER]->Fill(
@@ -675,7 +699,9 @@ int main(int argc, char **argv) {
                 }
             } // end of channel loop
         } // end of vldb loop
-        double leading_toa = find_leading_toa(toa_list_this_event, adc_list_this_event, 4, 1);
+        // leading_toa = find_leading_toa(toa_list_this_event, adc_list_this_event, 4, 1);
+        leading_toa = find_leading_toa_tot(toa_list_this_event, adc_list_this_event, tot_list_this_event, 10, 1);
+        
         double adc_weighted_event_toa = adc_weight_sum > 0.0 ? (adc_weighted_toa_sum / adc_weight_sum) : NAN;
         event_adc_weighted_toa_list.push_back(adc_weighted_event_toa);
         event_adc_toa_on_list.push_back(adc_toa_on_sum);
@@ -785,6 +811,19 @@ int main(int argc, char **argv) {
     canvas_example_channel_waveform->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_channel_" + std::to_string(chn_example) + "_waveform.pdf").c_str());
     canvas_example_channel_waveform->Write();
     canvas_example_channel_waveform->Close();
+
+    // draw the raw waveform of example channel
+    TCanvas *canvas_example_channel_raw_waveform = new TCanvas("canvas_example_channel_raw_waveform", "Example Channel Raw Waveform", 800, 600);
+    auto example_raw_waveform_hist = h2d_channel_raw_waveform_list[chn_example];
+    example_raw_waveform_hist->GetXaxis()->SetTitle("Time Sample");
+    example_raw_waveform_hist->GetYaxis()->SetTitle("Raw ADC Value");
+    canvas_example_channel_raw_waveform->cd();
+    format_2d_hist_canvas(canvas_example_channel_raw_waveform, example_raw_waveform_hist, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel " + std::to_string(chn_example) + " Raw Waveform", true, false, false);
+    canvas_example_channel_raw_waveform->Print(out_pdf.c_str());
+    // save a separate pdf file
+    canvas_example_channel_raw_waveform->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_channel_" + std::to_string(chn_example) + "_raw_waveform.pdf").c_str());
+    canvas_example_channel_raw_waveform->Write();
+    canvas_example_channel_raw_waveform->Close();
     
 
     // only draw if the total entry > 100 to avoid empty histograms
@@ -809,6 +848,8 @@ int main(int argc, char **argv) {
     }
     format_2d_hist_canvas(canvas_leading_toa_vs_adc, h2d_leading_toa_vs_adc, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Leading ToA vs ADC Sum");
     canvas_leading_toa_vs_adc->Print(out_pdf.c_str());
+    // save a separate pdf file
+    canvas_leading_toa_vs_adc->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_leading_toa_vs_adc.pdf").c_str());
     canvas_leading_toa_vs_adc->Write();
     canvas_leading_toa_vs_adc->Close();
 
@@ -1027,6 +1068,8 @@ int main(int argc, char **argv) {
 
     legend_adc_sum->Draw();
     canvas_adc_sum_comparison->Print(out_pdf.c_str());
+    // save a separate pdf file
+    canvas_adc_sum_comparison->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_sum_comparison.pdf").c_str());
     canvas_adc_sum_comparison->Write();
     canvas_adc_sum_comparison->Close();
 
@@ -1044,6 +1087,8 @@ int main(int argc, char **argv) {
     h2d_example->GetYaxis()->SetTitle("Corrected ToA [ns]");
     format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
     canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
+    // save a separate pdf file
+    canvas_toa_adc_max_corr_example->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_channel_" + std::to_string(chn_example) + "_toa_adc_max_corr.pdf").c_str());
     canvas_toa_adc_max_corr_example->Write();
     canvas_toa_adc_max_corr_example->Close();
 

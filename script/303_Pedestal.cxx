@@ -20,6 +20,9 @@ int main(int argc, char **argv) {
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
+    // std::string annotation_canvas_title = CANVAS_TITLE;
+    // std::string annotation_testbeam_title = TESTBEAM_TITLE;
+
     options.add_options()
         ("f,file", "Input .root file", cxxopts::value<std::string>())
         ("o,output", "Output .root file", cxxopts::value<std::string>())
@@ -169,6 +172,7 @@ int main(int argc, char **argv) {
     }
 
     TH2D* pedestal_distribution_th2d = new TH2D("pedestal_distribution", "Pedestal Distribution;Channel;ADC Value", FPGA_CHANNEL_NUMBER_VALID*vldb_number, 0, FPGA_CHANNEL_NUMBER_VALID*vldb_number, 512, 0, 512);
+    // set no directory to avoid being written to file, we will save it manually at the end
     pedestal_distribution_th2d->SetStats(0);
     pedestal_distribution_th2d->SetTitle("");
     pedestal_distribution_th2d->SetDirectory(nullptr);
@@ -232,60 +236,119 @@ int main(int argc, char **argv) {
 
     auto pedestal_distribution_canvas = new TCanvas("pedestal_distribution_canvas", "Pedestal Distribution Canvas", 800, 600);
     pedestal_distribution_canvas->cd();
-    pedestal_distribution_canvas->SetLogz();
-    pedestal_distribution_th2d->Draw("COLZ");
+    //     std::string example_canvas_info = "Channel " + std::to_string(example_channel) + " Raw Waveform";
+    // format_2d_hist_canvas(&example_waveform_canvas, example_waveform_hist, kBlue+2, annotation_canvas_title, annotation_testbeam_title, example_canvas_info, true, false, false);
+    std::string canvas_info = Form("Run %s, median pedestal", script_input_run_number.c_str());
+    format_2d_hist_canvas(pedestal_distribution_canvas, pedestal_distribution_th2d, kCyan+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
     // pedestal_distribution_canvas->SetLogz();
+    // pedestal_distribution_th2d->Draw("COLZ");
+    // // pedestal_distribution_canvas->SetLogz();
     pedestal_distribution_canvas->Write();
+    // save as pdf
+    std::string pedestal_distribution_pdf = script_output_folder + "/Run" + script_input_run_number + "_pedestal_distribution.pdf";
+    pedestal_distribution_canvas->SaveAs(pedestal_distribution_pdf.c_str());
     pedestal_distribution_canvas->Close();
 
     auto pedestal_distribution_average_canvas = new TCanvas("pedestal_distribution_average_canvas", "Pedestal Distribution Average Canvas", 800, 600);
     pedestal_distribution_average_canvas->cd();
-    pedestal_distribution_average_canvas->SetLogz();
-    pedestal_distribution_average_th2d->Draw("COLZ");
+    canvas_info = Form("Run %s, mean pedestal", script_input_run_number.c_str());
+    format_2d_hist_canvas(pedestal_distribution_average_canvas, pedestal_distribution_average_th2d, kMagenta+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    // pedestal_distribution_average_canvas->SetLogz();
+    // pedestal_distribution_average_th2d->Draw("COLZ");
     // pedestal_distribution_average_canvas->SetLogz();
     pedestal_distribution_average_canvas->Write();
+    // save as pdf
+    std::string pedestal_distribution_average_pdf = script_output_folder + "/Run" + script_input_run_number + "_pedestal_distribution_average.pdf";
+    pedestal_distribution_average_canvas->SaveAs(pedestal_distribution_average_pdf.c_str());
     pedestal_distribution_average_canvas->Close();
 
     TCanvas *pedestal_distribution_1d_canvas = new TCanvas("pedestal_distribution_1d_canvas", "Pedestal Distribution 1D Canvas", 800, 600);
     pedestal_distribution_1d_canvas->cd();
+    TLegend *legend = new TLegend(0.6, 0.6, 0.9, 0.9);
+    legend->SetBorderSize(0);
+    legend->SetFillStyle(0);
     // calculate the 90% max and 10% min for y axis
     auto sorted_event_adc_pedestal_list = event_adc_pedestal_list;
     std::sort(sorted_event_adc_pedestal_list.begin(), sorted_event_adc_pedestal_list.end());
     double y_min = sorted_event_adc_pedestal_list[static_cast<size_t>(0.1 * sorted_event_adc_pedestal_list.size())];
     double y_max = sorted_event_adc_pedestal_list[static_cast<size_t>(0.9 * sorted_event_adc_pedestal_list.size())];
+    y_min = y_min / double(FPGA_CHANNEL_NUMBER_VALID * vldb_number);
+    y_max = y_max / double(FPGA_CHANNEL_NUMBER_VALID * vldb_number);
     spdlog::info("Pedestal 10% min: {}, 90% max: {}", y_min, y_max);
     TH1D *pedestal_distribution_th1d = new TH1D("pedestal_distribution_1d", "Pedestal Distribution 1D", 200, y_min - 2.0*(y_max - y_min), y_max + 2.0*(y_max - y_min));
-    pedestal_distribution_th1d->SetStats(0);
-    pedestal_distribution_th1d->SetTitle("");
-    pedestal_distribution_th1d->GetXaxis()->SetTitle("Sum of ADC Pedestal over all channels");
-    pedestal_distribution_th1d->GetYaxis()->SetTitle("Entries");
+    canvas_info = Form("Run %s, %d events", script_input_run_number.c_str(), entry_max);
+
+    // pedestal_distribution_th1d->SetStats(0);
+    // pedestal_distribution_th1d->SetTitle("");
+    // // set y max
+    // pedestal_distribution_th1d->SetMaximum(pedestal_distribution_th1d->GetMaximum() * 1.3);
+    // // set color
+    // pedestal_distribution_th1d->SetLineColor(kCyan+2);
+    pedestal_distribution_th1d->GetXaxis()->SetTitle("Avergae Pedestal per Channel [ADC]");
+    pedestal_distribution_th1d->GetYaxis()->SetTitle("Counts");
 
     for (const auto& adc_pedestal : event_adc_pedestal_list) {
-        pedestal_distribution_th1d->Fill(adc_pedestal);
+        pedestal_distribution_th1d->Fill(adc_pedestal / double(FPGA_CHANNEL_NUMBER_VALID * vldb_number)); // fill the average pedestal per channel for better visualization
     }
-    pedestal_distribution_th1d->Draw();
+    format_1d_hist_canvas(pedestal_distribution_1d_canvas, pedestal_distribution_th1d, kCyan+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+    // pedestal_distribution_th1d->Draw("HIST");
+    legend->AddEntry(pedestal_distribution_th1d, "Pedestal (Median)", "l");
     // do gaussian fit
     double fit_mean = pedestal_distribution_th1d->GetMean();
     double fit_sigma = pedestal_distribution_th1d->GetRMS();
     TF1 *gaus_fit = new TF1("gaus_fit", "gaus", fit_mean - 4.0*fit_sigma, fit_mean + 4.0*fit_sigma);
     pedestal_distribution_th1d->Fit(gaus_fit, "RQ");
-    gaus_fit->SetLineColor(kRed);
+    gaus_fit->SetLineColorAlpha(kAzure-2, 0.8);
     gaus_fit->Draw("same");
+    
     pedestal_distribution_1d_canvas->Update();
     // write fit results
     double pedestal_fit_mean = gaus_fit->GetParameter(1);
     double pedestal_fit_sigma = gaus_fit->GetParameter(2);
     double pedestal_fit_mean_error = gaus_fit->GetParError(1);
     double pedestal_fit_sigma_error = gaus_fit->GetParError(2);
-    TLatex fit_results_text;
-    fit_results_text.SetNDC();
-    fit_results_text.SetTextSize(0.03);
-    fit_results_text.SetTextColor(kBlack);
-    fit_results_text.DrawLatex(0.15, 0.85, Form("#mu = %.2f #pm %.2f", pedestal_fit_mean, pedestal_fit_mean_error));
-    fit_results_text.DrawLatex(0.15, 0.80, Form("#sigma = %.2f #pm %.2f", pedestal_fit_sigma, pedestal_fit_sigma_error));
+    std::string fit_legend_entry = Form("Gaussian Fit (Median), #mu = %.2f, #sigma = %.2f", pedestal_fit_mean, pedestal_fit_sigma);
+    legend->AddEntry(gaus_fit, fit_legend_entry.c_str(), "l");
+
+    TH1D *pedestal_distribution_th1d_mean = new TH1D("pedestal_distribution_1d_mean", "Pedestal Distribution 1D Mean", 200, y_min - 2.0*(y_max - y_min), y_max + 2.0*(y_max - y_min));
+    pedestal_distribution_th1d_mean->SetStats(0);
+    pedestal_distribution_th1d_mean->SetTitle("");
+    pedestal_distribution_th1d_mean->SetLineColor(kRed-7);
+    pedestal_distribution_th1d_mean->GetXaxis()->SetTitle("Sum of ADC Pedestal (Mean) over all channels");
+    pedestal_distribution_th1d_mean->GetYaxis()->SetTitle("Entries");
+    for (const auto& adc_pedestal_mean : event_adc_pedestal_mean_list) {
+        pedestal_distribution_th1d_mean->Fill(adc_pedestal_mean / double(FPGA_CHANNEL_NUMBER_VALID * vldb_number)); // fill the average pedestal per channel for better visualization
+    }
+    pedestal_distribution_th1d_mean->Draw("HIST SAME");
+    legend->AddEntry(pedestal_distribution_th1d_mean, "Pedestal (Mean)", "l");
+    TF1 *gaus_fit_mean = new TF1("gaus_fit_mean", "gaus", fit_mean - 4.0*fit_sigma, fit_mean + 4.0*fit_sigma);
+    pedestal_distribution_th1d_mean->Fit(gaus_fit_mean, "RQ");
+    gaus_fit_mean->SetLineColorAlpha(kPink+4, 0.8);
+    gaus_fit_mean->Draw("same");
+    double pedestal_fit_mean_mean = gaus_fit_mean->GetParameter(1);
+    double pedestal_fit_mean_sigma = gaus_fit_mean->GetParameter(2);
+    double pedestal_fit_mean_mean_error = gaus_fit_mean->GetParError(1);
+    double pedestal_fit_mean_sigma_error = gaus_fit_mean->GetParError(2);
+    std::string fit_mean_legend_entry = Form("Gaussian Fit (Mean), #mu = %.2f, #sigma = %.2f", pedestal_fit_mean_mean, pedestal_fit_mean_sigma);
+    legend->AddEntry(gaus_fit_mean, fit_mean_legend_entry.c_str(), "l");
+
+    legend->Draw();
+
+    // TLatex fit_results_text;
+    // fit_results_text.SetNDC();
+    // fit_results_text.SetTextSize(0.03);
+    // fit_results_text.SetTextColor(kBlack);
+    // fit_results_text.DrawLatex(0.15, 0.85, Form("#mu = %.2f #pm %.2f", pedestal_fit_mean, pedestal_fit_mean_error));
+    // fit_results_text.DrawLatex(0.15, 0.80, Form("#sigma = %.2f #pm %.2f", pedestal_fit_sigma, pedestal_fit_sigma_error));
+    // fit_results_text.DrawLatex(0.55, 0.85, Form("#mu (mean) = %.2f #pm %.2f", pedestal_fit_mean_mean, pedestal_fit_mean_mean_error));
+    // fit_results_text.DrawLatex(0.55, 0.80, Form("#sigma (mean) = %.2f #pm %.2f", pedestal_fit_mean_sigma, pedestal_fit_mean_sigma_error));
 
     // pedestal_distribution_1d_canvas->SetLogy();
     pedestal_distribution_1d_canvas->Write();
+    // save to pdf file
+    std::string pedestal_distribution_1d_pdf = script_output_folder + "/Run" + script_input_run_number + "_pedestal_distribution_1d.pdf";
+    pedestal_distribution_1d_canvas->SaveAs(pedestal_distribution_1d_pdf.c_str());
+    spdlog::info("Pedestal distribution 1D plot saved to {}", pedestal_distribution_1d_pdf);
     pedestal_distribution_1d_canvas->Close();
 
     // write the fitting results to TParameter

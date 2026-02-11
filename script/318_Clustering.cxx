@@ -5,9 +5,9 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "H2GCROC_Clustering.hxx"
 #include "TRandom3.h"
 #include "CommonParams.hxx"
-
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -17,6 +17,7 @@ int main(int argc, char **argv) {
     std::string script_name = __FILE__;
     const std::string script_version = "0.1";
     std::string script_output_folder;
+    const int vldb_number = 2;
 
     script_name = script_name.substr(script_name.find_last_of("/\\") + 1).substr(0, script_name.find_last_of("."));
 
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
         spdlog::error("Failed to open mapping json file {}", mapping_json_file);
         return 1;
     }
+
     json mapping_json;
     mapping_json_ifs >> mapping_json;
     const auto& sipm_board      = mapping_json.at("SiPM_Board");
@@ -110,10 +112,33 @@ int main(int argc, char **argv) {
     spdlog::info("Output file: {} in {}", script_output_file, script_output_folder);
     spdlog::info("Number of events: {}", script_n_events);
 
+    const int NX = 16, NY = 12;
+    const int board_cols = 8, board_rows = 4;
+
+    auto chan2pad = build_chan2pad_LUT(
+        vldb_number, FPGA_CHANNEL_NUMBER,
+        NX, NY, board_cols, board_rows,
+        sipm_board, board_loc, board_rotation, board_flip
+    );
+
+    MosaicTopology topo_wave;
+    topo_wave.NX = NX;
+    topo_wave.NY = NY;
+    topo_wave.vldb_number = vldb_number;
+    topo_wave.channels_per_vldb = FPGA_CHANNEL_NUMBER;
+    topo_wave.reverse_row = true;
+    topo_wave.minimalist_axis = true;
+    topo_wave.th2_logz = true;
+    topo_wave.chan2pad = chan2pad;
+
+    MosaicTopology topo_ped_median = topo_wave;
+    topo_ped_median = topo_wave;
+    topo_ped_median.th2_logz = true;
+
     // * --- Read input file ------------------------------------------------------------
     // * --------------------------------------------------------------------------------
     const int machine_gun_samples = 16;
-    const int vldb_number = 2;
+
 
     TFile *input_root = new TFile(script_input_file.c_str(), "READ");
     if (input_root->IsZombie()) {
@@ -205,6 +230,17 @@ int main(int argc, char **argv) {
         }
     }
 
+    auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
+    if (output_root->IsZombie()) {
+        spdlog::error("Failed to create output file {}", script_output_file);
+        return 1;
+    }
+
+    std::string annotation_canvas_title = CANVAS_TITLE;
+    std::string annotation_testbeam_title = TESTBEAM_TITLE;
+    output_root->cd();
+    const std::string out_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + ".pdf";
+
     // * --- ADC Peak Position Histogram ---
     TH1D* h1_adc_peak_position = new TH1D("h1_adc_peak_position", "ADC Peak Position;Sample Index;Counts", machine_gun_samples, -0.5, machine_gun_samples - 0.5);
     h1_adc_peak_position->SetDirectory(nullptr);
@@ -222,13 +258,8 @@ int main(int argc, char **argv) {
     std::vector<double> adc_sum_list;
     adc_sum_list.reserve(entry_max);
 
-    // const int adc_peak_min_index = CommonParams::adc_peak_min_index;
-    // const int adc_peak_max_index = CommonParams::adc_peak_max_index;
-    const int adc_peak_min_index = 5;
-    const int adc_peak_max_index = 7;
-
-    // print the adc peak index range
-    spdlog::info("Using ADC peak index range: {} to {}", adc_peak_min_index, adc_peak_max_index);
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
 
     // first loop to find the dynamic range of each channel and whether it is a saturated channel
     std::vector<std::vector<UInt_t>> adc_peak_values_per_channel;
@@ -303,6 +334,10 @@ int main(int argc, char **argv) {
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
         double adc_sum = 0.0;
+        std::vector<double> adc_peak_values_current_event;
+        std::vector<int> adc_peak_values_chn_number;
+        adc_peak_values_current_event.reserve(vldb_number * FPGA_CHANNEL_NUMBER);
+        adc_peak_values_chn_number.reserve(vldb_number * FPGA_CHANNEL_NUMBER);
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
@@ -331,7 +366,6 @@ int main(int argc, char **argv) {
                             adc_min_value = adc_value;
                         }
                     }
-                    // if (sample >= 5 && sample <= 8) {
                     if (sample >= adc_peak_min_index && sample <= adc_peak_max_index) {
                         if (adc_value > adc_peak_ranged_value) {
                             adc_peak_ranged_value = adc_value;
@@ -341,12 +375,17 @@ int main(int argc, char **argv) {
                     // fill ADC waveform histogram
                     h2_adc_waveforms[vldb_id * FPGA_CHANNEL_NUMBER + channel]->Fill(sample, adc_value);
                     h1_adc_peak_position->Fill(adc_peak_index);
+
                 } // end of sample loop
                 // calculate the pedestal
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
                 //double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_pedestal = static_cast<double>(adc_min_value);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
+
+                adc_peak_values_current_event.push_back(adc_peak_value_pede_sub);
+                adc_peak_values_chn_number.push_back(vldb_id * FPGA_CHANNEL_NUMBER + channel);
+                // * Whether to cap the adc_peak_value_pede_sub to global_min_dynamic_range to avoid saturated channels dominating the ADC sum
                 // if (adc_peak_value_pede_sub > global_min_dynamic_range) {
                 //     adc_peak_value_pede_sub = static_cast<double>(global_min_dynamic_range);
                 // }
@@ -356,7 +395,90 @@ int main(int argc, char **argv) {
                 }
             } // end of channel loop
         } // end of vldb loop
-        adc_sum_list.push_back(adc_sum); // because we don't know the max adc sum value beforehand
+
+        // ! -- Do the clustering here if needed -- !
+
+        std::vector<int> channel_x_positions;
+        std::vector<int> channel_y_positions;
+        std::vector<double> channel_value_positions;
+        mapping_chn_to_xy(
+            adc_peak_values_current_event,
+            adc_peak_values_chn_number,
+            topo_wave,
+            channel_x_positions,
+            channel_y_positions,
+            &channel_value_positions
+        );
+
+        double cluster_energy_sum = 0.0;
+        if (true) {
+            TH2D* h2_event_display = event_map(
+                channel_value_positions,
+                channel_x_positions,
+                channel_y_positions,
+                NX,
+                NY
+            );
+            if (!h2_event_display) {
+                spdlog::warn("Failed to build event map for entry {} due to inconsistent pixel data", entry);
+                continue;
+            }
+            const std::string canvas_name = "event_display_canvas_" + std::to_string(entry);
+            TCanvas event_display_canvas(canvas_name.c_str(), "Event Display Canvas", 800, 600);
+            h2_event_display->GetXaxis()->SetTitle("X Position");
+            h2_event_display->GetYaxis()->SetTitle("Y Position");
+            std::string canvas_info = "Event " + std::to_string(entry) + " ADC Peak Map";
+            format_2d_hist_canvas(&event_display_canvas, h2_event_display, kBlue+2, CANVAS_TITLE, TESTBEAM_TITLE, canvas_info, true, false, false);
+
+            std::vector<int> cluster_x_list, cluster_y_list, cluster_id_list;
+            std::vector<double> cluster_com_x, cluster_com_y;
+
+            auto clusters = cluster_uniform_grid_topcells(
+                channel_x_positions,
+                channel_y_positions,
+                channel_value_positions,
+                NX,
+                NY,
+                1.0,    // pitch in cm
+                500.0,  // threshold in ADC units
+                20.0,   // neighbor threshold in ADC units
+                false,  // use diagonal neighbors
+                200.0,  // min cluster energy
+                160,    // max cluster size
+                1       // max cluster number
+            );
+
+            if (clusters.empty()) {
+                h2_event_display->Delete();
+                event_display_canvas.Close();
+                continue;
+            }
+            for (const auto& cluster : clusters) {
+                auto cluster_xs = cluster.xs;
+                auto cluster_ys = cluster.ys;
+                cluster_x_list.insert(cluster_x_list.end(), cluster_xs.begin(), cluster_xs.end());
+                cluster_y_list.insert(cluster_y_list.end(), cluster_ys.begin(), cluster_ys.end());
+                cluster_com_x.push_back(cluster.x_cm_cell);
+                cluster_com_y.push_back(cluster.y_cm_cell);
+                cluster_energy_sum += cluster.sumE;
+                break; // only consider the first cluster
+            }
+    
+            label_pixels(&event_display_canvas, cluster_x_list, cluster_y_list);
+            label_markers(&event_display_canvas, cluster_com_x, cluster_com_y);
+
+            if (entry < 10) {
+                output_root->cd();
+                event_display_canvas.Write();
+            }
+            h2_event_display->Delete();
+            event_display_canvas.Close();
+
+        } // end of first 10 events
+        if (cluster_energy_sum > 0.0) {
+            adc_sum_list.push_back(cluster_energy_sum); // because we don't know the max adc sum value beforehand
+        }
+        
     } // end of event loop
     input_root->Close();
 
@@ -364,39 +486,23 @@ int main(int argc, char **argv) {
 
     // * === Plot to output file =============================================================
     // * =====================================================================================
-    const int NX = 16, NY = 12;
-    const int board_cols = 8, board_rows = 4;
 
-    auto chan2pad = build_chan2pad_LUT(
-        vldb_number, FPGA_CHANNEL_NUMBER,
-        NX, NY, board_cols, board_rows,
-        sipm_board, board_loc, board_rotation, board_flip
-    );
+    // subtract the baseline adc sum by finding the 0.1% percentile value
+    // if (!adc_sum_list.empty()) {
+    //     auto sorted_adc_sum_list = adc_sum_list;;
+    //     std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
+    //     double adc_sum_baseline = sorted_adc_sum_list[static_cast<size_t>(0.001 * sorted_adc_sum_list.size()) - 1];
+    //     spdlog::info("Baseline ADC sum (0.1% percentile) is {}", format_decimal(adc_sum_baseline));
+    //     for (auto& adc_sum_value : adc_sum_list) {
+    //         adc_sum_value -= adc_sum_baseline;
+    //         if (adc_sum_value < 0.0) {
+    //             adc_sum_value = 0.0;
+    //         }
+    //     }
+    // } else {
+    //     spdlog::warn("ADC sum list is empty, skipping baseline subtraction");
+    // }
 
-    MosaicTopology topo_wave;
-    topo_wave.NX = NX;
-    topo_wave.NY = NY;
-    topo_wave.vldb_number = vldb_number;
-    topo_wave.channels_per_vldb = FPGA_CHANNEL_NUMBER;
-    topo_wave.reverse_row = true;
-    topo_wave.minimalist_axis = true;
-    topo_wave.th2_logz = true;
-    topo_wave.chan2pad = chan2pad;
-
-    MosaicTopology topo_ped_median = topo_wave;
-    topo_ped_median = topo_wave;
-    topo_ped_median.th2_logz = true;
-
-    auto output_root = new TFile(script_output_file.c_str(), "RECREATE");
-    if (output_root->IsZombie()) {
-        spdlog::error("Failed to create output file {}", script_output_file);
-        return 1;
-    }
-
-    std::string annotation_canvas_title = CANVAS_TITLE;
-    std::string annotation_testbeam_title = TESTBEAM_TITLE;
-    output_root->cd();
-    const std::string out_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + ".pdf";
 
     // --- Write to output file ------------------------------------------------------------
     TCanvas adc_waveform_canvas("adc_waveform_canvas", "ADC Waveform Canvas", 1600, 1200);
@@ -437,215 +543,240 @@ int main(int argc, char **argv) {
 
     // ! -- Raw ADC Sum distribution Histogram ---
     // ! =====================================================================================
-    TCanvas adc_sum_distribution_canvas("adc_sum_distribution_canvas", "ADC Sum Distribution Canvas", 800, 600);
-    canvas_info = "ADC Sum Distribution, Run " + script_input_run_number;
-    // determine 90% percentile max value for better visualization
-    auto sorted_adc_sum_list = adc_sum_list;
-    std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
-    double adc_sum_90pct_max = sorted_adc_sum_list[static_cast<size_t>(0.9 * sorted_adc_sum_list.size()) - 1];
-    // create histogram and fill
-    double x_hist_max = adc_sum_90pct_max * 1.8;
-    double x_hist_min = 0.0;
-    const double bin_width = 300.0;
-    int n_bins = static_cast<int>((x_hist_max - x_hist_min) / bin_width);
-    if (n_bins < 100) n_bins = 100; // at least 100 bins
-    TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", n_bins, x_hist_min, x_hist_max);
-    for (const auto& adc_sum_value : adc_sum_list) {
-        h1_adc_sum_distribution->Fill(adc_sum_value);
-    }
-    format_1d_hist_canvas(&adc_sum_distribution_canvas, h1_adc_sum_distribution, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
-    // add additional statistics
-    double adc_sum_mean = h1_adc_sum_distribution->GetMean();
-    double adc_sum_entry = h1_adc_sum_distribution->GetEntries();
-    double adc_sum_rms = h1_adc_sum_distribution->GetRMS();
-    TPaveText *pave_stats = new TPaveText(0.6,0.7,0.88,0.88,"NDC");
-    pave_stats->SetFillColorAlpha(kWhite,0.0);
-    pave_stats->SetBorderSize(0);
-    // right align text
-    pave_stats->SetTextAlign(31);
-    pave_stats->SetTextFont(42);
-    pave_stats->SetTextSize(0.03);
-    pave_stats->SetTextColor(kBlue+2);
-    pave_stats->AddText(("Entries: " + std::to_string(static_cast<int>(adc_sum_entry))).c_str());
-    pave_stats->AddText(("Mean: " + format_decimal(adc_sum_mean)).c_str());
-    pave_stats->AddText(("RMS: " + format_decimal(adc_sum_rms)).c_str());
-    pave_stats->Draw();
+    const bool has_adc_sum_stats = !adc_sum_list.empty();
+    double mean_avg = 0.0;
+    double mean_err_sys = 0.0;
+    double mean_err_stat = 0.0;
+    double sigma_avg = 0.0;
+    double sigma_err_sys = 0.0;
+    double sigma_err_stat = 0.0;
+    double resolution = 0.0;
+    double sigma_err = 0.0;
+    double resolution_err = 0.0;
+    double cb_mean_avg = 0.0;
+    double cb_mean_err_sys = 0.0;
+    double cb_mean_err_stat = 0.0;
+    double cb_sigma_avg = 0.0;
+    double cb_sigma_err_sys = 0.0;
+    double cb_sigma_err_stat = 0.0;
+    double cb_sigma_err = 0.0;
+    double cb_effective_sigma_avg = 0.0;
+    double cb_effective_sigma_err_sys = 0.0;
+    double cb_effective_sigma_err_stat = 0.0;
+    double cb_resolution = 0.0;
+    double cb_resolution_err = 0.0;
+    double cb_effective_resolution = 0.0;
+    double cb_effective_resolution_err = 0.0;
 
-    adc_sum_distribution_canvas.Print(out_pdf.c_str());
-    adc_sum_distribution_canvas.Write();
-    adc_sum_distribution_canvas.Close();
-
-    // ! -- Fitted ADC Sum distribution Histogram ---
-    TCanvas adc_sum_distribution_fitted_canvas("adc_sum_distribution_fitted_canvas", "ADC Sum Distribution Fitted Canvas", 800, 600);
-    canvas_info = "Fitted ADC Sum Distribution, Run " + script_input_run_number;
-    TH1D* h1_adc_sum_distribution_fitted = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_fitted");
-    format_1d_hist_canvas(&adc_sum_distribution_fitted_canvas, h1_adc_sum_distribution_fitted, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
-    // pre-fit for initial values
-    double fit_min = adc_sum_mean - 2 * adc_sum_rms;
-    double fit_max = adc_sum_mean + 3 * adc_sum_rms;
-    if (fit_min < 0) fit_min = 0;
-    double fit_amp_init = h1_adc_sum_distribution_fitted->GetMaximum();
-    TF1 *gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
-    // set initial values
-    gaus_fit_pre->SetParameter(0, fit_amp_init);
-    gaus_fit_pre->SetParameter(1, adc_sum_mean);
-    gaus_fit_pre->SetParameter(2, adc_sum_rms);
-    h1_adc_sum_distribution_fitted->Fit(gaus_fit_pre, "RQ");
-    double pre_fit_amp = gaus_fit_pre->GetParameter(0);
-    double pre_fit_mean = gaus_fit_pre->GetParameter(1);
-    double pre_fit_sigma = gaus_fit_pre->GetParameter(2);
-    double pre_fit_chi2 = gaus_fit_pre->GetChisquare();
-    double pre_fit_ndf = gaus_fit_pre->GetNDF();
-    // draw fitted function
-    gaus_fit_pre->SetLineColor(kRed);
-    gaus_fit_pre->SetLineWidth(2);
-    gaus_fit_pre->Draw("same");
-
-    // do the second round of fit with initial values from pre-fit
-    fit_min = pre_fit_mean - 1.5 * pre_fit_sigma;
-    fit_max = pre_fit_mean + 2.5 * pre_fit_sigma;
-    if (fit_min < 0) fit_min = 0;
-    TF1 *gaus_fit_final = new TF1("gaus_fit_final", "gaus", fit_min, fit_max);
-    // set initial values
-    gaus_fit_final->SetParameter(0, pre_fit_amp);
-    gaus_fit_final->SetParameter(1, pre_fit_mean);
-    gaus_fit_final->SetParameter(2, pre_fit_sigma);
-    h1_adc_sum_distribution_fitted->Fit(gaus_fit_final, "RQ+");
-
-    double pre_fit_2_amp = gaus_fit_final->GetParameter(0);
-    double pre_fit_2_mean = gaus_fit_final->GetParameter(1);
-    double pre_fit_2_sigma = gaus_fit_final->GetParameter(2);
-    double pre_fit_2_chi2 = gaus_fit_final->GetChisquare();
-    double pre_fit_2_ndf = gaus_fit_final->GetNDF();
-    // draw final fitted function
-    gaus_fit_final->SetLineColor(kGreen+2);
-    gaus_fit_final->SetLineWidth(2);
-    gaus_fit_final->Draw("same");
-
-    // add additional statistics
-    TPaveText *pave_stats_pre = new TPaveText(0.55,0.73,0.90,0.88,"NDC");
-    pave_stats_pre->SetFillColorAlpha(kWhite,0.0);
-    pave_stats_pre->SetBorderSize(0);
-    pave_stats_pre->SetTextAlign(31);
-    pave_stats_pre->SetTextFont(42);
-    pave_stats_pre->SetTextSize(0.03);
-    pave_stats_pre->SetTextColor(kRed);
-    pave_stats_pre->AddText("Pre-Fit:");
-    pave_stats_pre->AddText(("  Mean: " + format_decimal(pre_fit_mean)).c_str());
-    pave_stats_pre->AddText(("  Sigma: " + format_decimal(pre_fit_sigma)).c_str());
-    pave_stats_pre->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
-    pave_stats_pre->Draw();
-
-    TPaveText *pave_stats_pre_2 = new TPaveText(0.55,0.58,0.90,0.73,"NDC");
-    pave_stats_pre_2->SetFillColorAlpha(kWhite,0.0);
-    pave_stats_pre_2->SetBorderSize(0);
-    pave_stats_pre_2->SetTextAlign(31);
-    pave_stats_pre_2->SetTextFont(42);
-    pave_stats_pre_2->SetTextSize(0.03);
-    pave_stats_pre_2->SetTextColor(kGreen+2);
-    pave_stats_pre_2->AddText("Pre-Fit 2:");
-    pave_stats_pre_2->AddText(("  Mean: " + format_decimal(pre_fit_2_mean)).c_str());
-    pave_stats_pre_2->AddText(("  Sigma: " + format_decimal(pre_fit_2_sigma)).c_str());
-    pave_stats_pre_2->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_2_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
-    pave_stats_pre_2->Draw();
-
-    adc_sum_distribution_fitted_canvas.Modified();
-    adc_sum_distribution_fitted_canvas.Update();
-    adc_sum_distribution_fitted_canvas.Print(out_pdf.c_str());
-    adc_sum_distribution_fitted_canvas.Write();
-    adc_sum_distribution_fitted_canvas.Close();
-
-    // ! --- Do the real gaussian fit ---
-    TCanvas adc_sum_distribution_gausfit_canvas("adc_sum_distribution_gausfit_canvas", "ADC Sum Distribution Gaus Fit Canvas", 800, 600);
-    canvas_info = "Gaussian Fitted ADC, Run " + script_input_run_number;
-    TH1D* h1_adc_sum_distribution_gausfit = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_gausfit");
-    format_1d_hist_canvas(&adc_sum_distribution_gausfit_canvas, h1_adc_sum_distribution_gausfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
-
-    // define the fitting range
-    const std::vector<double> fit_range_sigmas = {2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5}; // in sigma
-    const std::vector<double> fit_range_offsets = {-0.4, -0.2, 0.0, 0.2, 0.4}; // in sigma
-    std::vector<double> fit_results_means;
-    std::vector<double> fit_results_mean_errs;
-    std::vector<double> fit_results_sigmas;
-    std::vector<double> fit_results_sigma_errs;
-    std::vector<double> fit_results_chi2s;
-    std::vector<double> fit_results_ndfs;
-
-    for (const auto& range_sigma : fit_range_sigmas) {
-        for (const auto& range_offset : fit_range_offsets) {
-            double fit_min = pre_fit_2_mean - range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
-            double fit_max = pre_fit_2_mean + range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
-            if (fit_min < 0) fit_min = 0;
-            TF1 *gaus_fit_real = new TF1("gaus_fit_real", "gaus", fit_min, fit_max);
-            // set initial values
-            gaus_fit_real->SetParameter(0, pre_fit_2_amp);
-            gaus_fit_real->SetParameter(1, pre_fit_2_mean);
-            gaus_fit_real->SetParameter(2, pre_fit_2_sigma);
-            h1_adc_sum_distribution_gausfit->Fit(gaus_fit_real, "RNQ+");
-
-            double fit_mean = gaus_fit_real->GetParameter(1);
-            double fit_mean_err = gaus_fit_real->GetParError(1);
-            double fit_sigma = gaus_fit_real->GetParameter(2);
-            double fit_sigma_err = gaus_fit_real->GetParError(2);
-
-            double fit_chi2 = gaus_fit_real->GetChisquare();
-            double fit_ndf = gaus_fit_real->GetNDF();
-
-            fit_results_means.push_back(fit_mean);
-            fit_results_mean_errs.push_back(fit_mean_err);
-            fit_results_sigmas.push_back(fit_sigma);
-            fit_results_sigma_errs.push_back(fit_sigma_err);
-            fit_results_chi2s.push_back(fit_chi2);
-            fit_results_ndfs.push_back(fit_ndf);
-
-            gaus_fit_real->SetLineColorAlpha(kCyan+2, 0.2);
-            gaus_fit_real->SetLineWidth(2);
-            gaus_fit_real->Draw("same");
-
-            spdlog::info("Gaus Fit Range Sigma: {}, Offset: {} => Mean: {}, Sigma: {}, Chi2/NDF: {}/{}", 
-                range_sigma, range_offset, fit_mean, fit_sigma, fit_chi2, fit_ndf
-            );
+    if (!has_adc_sum_stats) {
+        spdlog::warn("ADC sum list is empty, skipping ADC sum plots");
+    } else {
+        TCanvas adc_sum_distribution_canvas("adc_sum_distribution_canvas", "ADC Sum Distribution Canvas", 800, 600);
+        canvas_info = "ADC Sum Distribution, Run " + script_input_run_number;
+        auto sorted_adc_sum_list = adc_sum_list;
+        std::sort(sorted_adc_sum_list.begin(), sorted_adc_sum_list.end());
+        const size_t ninety_percentile_idx = static_cast<size_t>(0.9 * sorted_adc_sum_list.size());
+        const size_t safe_idx = std::min(sorted_adc_sum_list.size() - 1, std::max<size_t>(0, ninety_percentile_idx == 0 ? 0 : ninety_percentile_idx - 1));
+        double adc_sum_90pct_max = sorted_adc_sum_list[safe_idx];
+        double x_hist_max = adc_sum_90pct_max * 1.8;
+        if (x_hist_max <= 0.0) x_hist_max = 1.0;
+        double x_hist_min = 0.0;
+        const double bin_width = 300.0;
+        int n_bins = static_cast<int>((x_hist_max - x_hist_min) / bin_width);
+        if (n_bins < 100) n_bins = 100;
+        TH1D* h1_adc_sum_distribution = new TH1D("h1_adc_sum_distribution", "ADC Sum Distribution;ADC Sum;Counts", n_bins, x_hist_min, x_hist_max);
+        for (const auto& adc_sum_value : adc_sum_list) {
+            h1_adc_sum_distribution->Fill(adc_sum_value);
         }
-    }
+        format_1d_hist_canvas(&adc_sum_distribution_canvas, h1_adc_sum_distribution, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
 
-    double mean_avg=0.0;
-    double mean_err_sys=0.0;
-    double mean_err_stat=0.0;
-    double sigma_avg=0.0;
-    double sigma_err_sys=0.0;
-    double sigma_err_stat=0.0;
+        double adc_sum_mean = h1_adc_sum_distribution->GetMean();
+        double adc_sum_entry = h1_adc_sum_distribution->GetEntries();
+        double adc_sum_rms = h1_adc_sum_distribution->GetRMS();
+        TPaveText *pave_stats = new TPaveText(0.6,0.7,0.88,0.88,"NDC");
+        pave_stats->SetFillColorAlpha(kWhite,0.0);
+        pave_stats->SetBorderSize(0);
+        pave_stats->SetTextAlign(31);
+        pave_stats->SetTextFont(42);
+        pave_stats->SetTextSize(0.03);
+        pave_stats->SetTextColor(kBlue+2);
+        pave_stats->AddText(("Entries: " + std::to_string(static_cast<int>(adc_sum_entry))).c_str());
+        pave_stats->AddText(("Mean: " + format_decimal(adc_sum_mean)).c_str());
+        pave_stats->AddText(("RMS: " + format_decimal(adc_sum_rms)).c_str());
+        pave_stats->Draw();
 
-    spdlog::info("Calculating mean and sigma from multiple fit results...");
-    mean_sigma_list_calculator(
-        fit_results_means,
-        fit_results_mean_errs,
-        fit_results_sigmas,
-        fit_results_sigma_errs,
-        mean_avg,
-        mean_err_sys,
-        mean_err_stat,
-        sigma_avg,
-        sigma_err_sys,
-        sigma_err_stat
-    );
-    spdlog::info("Mean: {} +/- {} (stat) +/- {} (sys)", mean_avg, mean_err_stat, mean_err_sys);
-    spdlog::info("Sigma: {} +/- {} (stat) +/- {} (sys)", sigma_avg, sigma_err_stat, sigma_err_sys);
+        adc_sum_distribution_canvas.Print(out_pdf.c_str());
+        adc_sum_distribution_canvas.Write();
+        adc_sum_distribution_canvas.Close();
 
-    double resolution = (sigma_avg / mean_avg) * 100.0;
-    double mean_err = std::sqrt(mean_err_stat * mean_err_stat + mean_err_sys * mean_err_sys);
-    double sigma_err = std::sqrt(sigma_err_stat * sigma_err_stat + sigma_err_sys * sigma_err_sys);
-    double resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
-    spdlog::info("Calculated Resolution: {} % +/- {} %", resolution, resolution_err);
+        // ! -- Fitted ADC Sum distribution Histogram ---
+        TCanvas adc_sum_distribution_fitted_canvas("adc_sum_distribution_fitted_canvas", "ADC Sum Distribution Fitted Canvas", 800, 600);
+        canvas_info = "Fitted ADC Sum Distribution, Run " + script_input_run_number;
+        TH1D* h1_adc_sum_distribution_fitted = static_cast<TH1D*>(h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_fitted"));
+        format_1d_hist_canvas(&adc_sum_distribution_fitted_canvas, h1_adc_sum_distribution_fitted, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
 
-    // add additional statistics
-    TPaveText *pave_stats_gausfit = new TPaveText(0.55,0.6,0.90,0.88,"NDC");
-    pave_stats_gausfit->SetFillColorAlpha(kWhite,0.0);
-    pave_stats_gausfit->SetBorderSize(0);
-    pave_stats_gausfit->SetTextAlign(31);
-    pave_stats_gausfit->SetTextFont(42);
-    pave_stats_gausfit->SetTextSize(0.03);
-    pave_stats_gausfit->SetTextColor(kCyan+2);
-    pave_stats_gausfit->AddText("Gaussian Fit Results:");
+        double fit_min = adc_sum_mean - 2 * adc_sum_rms;
+        double fit_max = adc_sum_mean + 3 * adc_sum_rms;
+        if (fit_min < 0) fit_min = 0;
+        TF1 *gaus_fit_pre = new TF1("gaus_fit_pre", "gaus", fit_min, fit_max);
+        gaus_fit_pre->SetParameter(0, h1_adc_sum_distribution_fitted->GetMaximum());
+        gaus_fit_pre->SetParameter(1, adc_sum_mean);
+        gaus_fit_pre->SetParameter(2, adc_sum_rms);
+        h1_adc_sum_distribution_fitted->Fit(gaus_fit_pre, "RQ");
+        double pre_fit_amp = gaus_fit_pre->GetParameter(0);
+        double pre_fit_mean = gaus_fit_pre->GetParameter(1);
+        double pre_fit_sigma = gaus_fit_pre->GetParameter(2);
+        gaus_fit_pre->SetLineColor(kRed);
+        gaus_fit_pre->SetLineWidth(2);
+        gaus_fit_pre->Draw("same");
+
+        fit_min = pre_fit_mean - 1.5 * pre_fit_sigma;
+        fit_max = pre_fit_mean + 2.5 * pre_fit_sigma;
+        if (fit_min < 0) fit_min = 0;
+        TF1 *gaus_fit_final = new TF1("gaus_fit_final", "gaus", fit_min, fit_max);
+        gaus_fit_final->SetParameter(0, pre_fit_amp);
+        gaus_fit_final->SetParameter(1, pre_fit_mean);
+        gaus_fit_final->SetParameter(2, pre_fit_sigma);
+        h1_adc_sum_distribution_fitted->Fit(gaus_fit_final, "RQ+");
+
+        gaus_fit_final->SetLineColor(kGreen+2);
+        gaus_fit_final->SetLineWidth(2);
+        gaus_fit_final->Draw("same");
+
+        adc_sum_distribution_fitted_canvas.Print(out_pdf.c_str());
+        adc_sum_distribution_fitted_canvas.Write();
+        
+        // add additional statistics
+        TPaveText *pave_stats_pre = new TPaveText(0.55,0.73,0.90,0.88,"NDC");
+        pave_stats_pre->SetFillColorAlpha(kWhite,0.0);
+        pave_stats_pre->SetBorderSize(0);
+        pave_stats_pre->SetTextAlign(31);
+        pave_stats_pre->SetTextFont(42);
+        pave_stats_pre->SetTextSize(0.03);
+        pave_stats_pre->SetTextColor(kRed);
+        pave_stats_pre->AddText("Pre-Fit:");
+        double pre_fit_chi2 = gaus_fit_pre->GetChisquare();
+        double pre_fit_ndf = gaus_fit_pre->GetNDF();
+        double pre_fit_2_amp = gaus_fit_final->GetParameter(0);
+        double pre_fit_2_mean = gaus_fit_final->GetParameter(1);
+        double pre_fit_2_sigma = gaus_fit_final->GetParameter(2);
+        double pre_fit_2_chi2 = gaus_fit_final->GetChisquare();
+        double pre_fit_2_ndf = gaus_fit_final->GetNDF();
+
+        pave_stats_pre->AddText(("  Mean: " + format_decimal(pre_fit_mean)).c_str());
+        pave_stats_pre->AddText(("  Sigma: " + format_decimal(pre_fit_sigma)).c_str());
+        pave_stats_pre->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_ndf))).c_str());
+        pave_stats_pre->Draw();
+
+        TPaveText *pave_stats_pre_2 = new TPaveText(0.55,0.58,0.90,0.73,"NDC");
+        pave_stats_pre_2->SetFillColorAlpha(kWhite,0.0);
+        pave_stats_pre_2->SetBorderSize(0);
+        pave_stats_pre_2->SetTextAlign(31);
+        pave_stats_pre_2->SetTextFont(42);
+        pave_stats_pre_2->SetTextSize(0.03);
+        pave_stats_pre_2->SetTextColor(kGreen+2);
+        pave_stats_pre_2->AddText("Pre-Fit 2:");
+        pave_stats_pre_2->AddText(("  Mean: " + format_decimal(pre_fit_2_mean)).c_str());
+        pave_stats_pre_2->AddText(("  Sigma: " + format_decimal(pre_fit_2_sigma)).c_str());
+        pave_stats_pre_2->AddText(("  Chi2/NDF: " + format_decimal(pre_fit_2_chi2) + "/" + std::to_string(static_cast<int>(pre_fit_2_ndf))).c_str());
+        pave_stats_pre_2->Draw();
+
+        adc_sum_distribution_fitted_canvas.Modified();
+        adc_sum_distribution_fitted_canvas.Update();
+        adc_sum_distribution_fitted_canvas.Print(out_pdf.c_str());
+        adc_sum_distribution_fitted_canvas.Write();
+        adc_sum_distribution_fitted_canvas.Close();
+
+        // ! --- Do the real gaussian fit ---
+        TCanvas adc_sum_distribution_gausfit_canvas("adc_sum_distribution_gausfit_canvas", "ADC Sum Distribution Gaus Fit Canvas", 800, 600);
+        canvas_info = "Gaussian Fitted ADC, Run " + script_input_run_number;
+        TH1D* h1_adc_sum_distribution_gausfit = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_gausfit");
+        format_1d_hist_canvas(&adc_sum_distribution_gausfit_canvas, h1_adc_sum_distribution_gausfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+
+        // define the fitting range
+        const std::vector<double> fit_range_sigmas = {2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5}; // in sigma
+        const std::vector<double> fit_range_offsets = {-0.4, -0.2, 0.0, 0.2, 0.4}; // in sigma
+        std::vector<double> fit_results_means;
+        std::vector<double> fit_results_mean_errs;
+        std::vector<double> fit_results_sigmas;
+        std::vector<double> fit_results_sigma_errs;
+        std::vector<double> fit_results_chi2s;
+        std::vector<double> fit_results_ndfs;
+
+        for (const auto& range_sigma : fit_range_sigmas) {
+            for (const auto& range_offset : fit_range_offsets) {
+                double fit_min = pre_fit_2_mean - range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
+                double fit_max = pre_fit_2_mean + range_sigma * pre_fit_2_sigma + range_offset * pre_fit_2_sigma;
+                if (fit_min < 0) fit_min = 0;
+                TF1 *gaus_fit_real = new TF1("gaus_fit_real", "gaus", fit_min, fit_max);
+                // set initial values
+                gaus_fit_real->SetParameter(0, pre_fit_2_amp);
+                gaus_fit_real->SetParameter(1, pre_fit_2_mean);
+                gaus_fit_real->SetParameter(2, pre_fit_2_sigma);
+                h1_adc_sum_distribution_gausfit->Fit(gaus_fit_real, "RNQ+");
+
+                double fit_mean = gaus_fit_real->GetParameter(1);
+                double fit_mean_err = gaus_fit_real->GetParError(1);
+                double fit_sigma = gaus_fit_real->GetParameter(2);
+                double fit_sigma_err = gaus_fit_real->GetParError(2);
+
+                double fit_chi2 = gaus_fit_real->GetChisquare();
+                double fit_ndf = gaus_fit_real->GetNDF();
+
+                fit_results_means.push_back(fit_mean);
+                fit_results_mean_errs.push_back(fit_mean_err);
+                fit_results_sigmas.push_back(fit_sigma);
+                fit_results_sigma_errs.push_back(fit_sigma_err);
+                fit_results_chi2s.push_back(fit_chi2);
+                fit_results_ndfs.push_back(fit_ndf);
+
+                gaus_fit_real->SetLineColorAlpha(kCyan+2, 0.2);
+                gaus_fit_real->SetLineWidth(2);
+                gaus_fit_real->Draw("same");
+
+                spdlog::info("Gaus Fit Range Sigma: {}, Offset: {} => Mean: {}, Sigma: {}, Chi2/NDF: {}/{}", 
+                    range_sigma, range_offset, fit_mean, fit_sigma, fit_chi2, fit_ndf
+                );
+            }
+        }
+
+        adc_sum_distribution_gausfit_canvas.Modified();
+        adc_sum_distribution_gausfit_canvas.Update();
+        adc_sum_distribution_gausfit_canvas.Print(out_pdf.c_str());
+        adc_sum_distribution_gausfit_canvas.Write();
+        adc_sum_distribution_gausfit_canvas.Close();
+
+        spdlog::info("Calculating mean and sigma from multiple fit results...");
+        mean_sigma_list_calculator(
+            fit_results_means,
+            fit_results_mean_errs,
+            fit_results_sigmas,
+            fit_results_sigma_errs,
+            mean_avg,
+            mean_err_sys,
+            mean_err_stat,
+            sigma_avg,
+            sigma_err_sys,
+            sigma_err_stat
+        );
+        spdlog::info("Mean: {} +/- {} (stat) +/- {} (sys)", mean_avg, mean_err_stat, mean_err_sys);
+        spdlog::info("Sigma: {} +/- {} (stat) +/- {} (sys)", sigma_avg, sigma_err_stat, sigma_err_sys);
+
+        double mean_err = std::sqrt(mean_err_stat * mean_err_stat + mean_err_sys * mean_err_sys);
+        sigma_err = std::sqrt(sigma_err_stat * sigma_err_stat + sigma_err_sys * sigma_err_sys);
+        resolution = (sigma_avg / mean_avg) * 100.0;
+        resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
+        spdlog::info("Calculated Resolution: {} % +/- {} %", resolution, resolution_err);
+
+        // add additional statistics
+        TPaveText *pave_stats_gausfit = new TPaveText(0.55,0.6,0.90,0.88,"NDC");
+        pave_stats_gausfit->SetFillColorAlpha(kWhite,0.0);
+        pave_stats_gausfit->SetBorderSize(0);
+        pave_stats_gausfit->SetTextAlign(31);
+        pave_stats_gausfit->SetTextFont(42);
+        pave_stats_gausfit->SetTextSize(0.03);
+        pave_stats_gausfit->SetTextColor(kCyan+2);
+        pave_stats_gausfit->AddText("Gaussian Fit Results:");
     
     std::string mean_str = format_decimal(mean_avg);
     std::string mean_err_stat_str = format_decimal(mean_err_stat);
@@ -670,17 +801,18 @@ int main(int argc, char **argv) {
     pave_stats_gausfit->AddText(resolution_text.c_str());
     pave_stats_gausfit->Draw();
 
-    adc_sum_distribution_gausfit_canvas.Modified();
-    adc_sum_distribution_gausfit_canvas.Update();
-    adc_sum_distribution_gausfit_canvas.Print(out_pdf.c_str());
-    adc_sum_distribution_gausfit_canvas.Write();
-    adc_sum_distribution_gausfit_canvas.Close();
-    
-     // ! --- Do the real crystalball fit ---
-    TCanvas adc_sum_distribution_cbfit_canvas("adc_sum_distribution_cbfit_canvas", "ADC Sum Distribution CB Fit Canvas", 800, 600);
-    canvas_info = "Crystal Ball Fitted ADC, Run " + script_input_run_number;
-    TH1D* h1_adc_sum_distribution_cbfit = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_cbfit");
-    format_1d_hist_canvas(&adc_sum_distribution_cbfit_canvas, h1_adc_sum_distribution_cbfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
+        // capture canvas with stats
+        adc_sum_distribution_gausfit_canvas.Modified();
+        adc_sum_distribution_gausfit_canvas.Update();
+        adc_sum_distribution_gausfit_canvas.Print(out_pdf.c_str());
+        adc_sum_distribution_gausfit_canvas.Write();
+        adc_sum_distribution_gausfit_canvas.Close();
+
+        // ! --- Do the real crystalball fit ---
+        TCanvas adc_sum_distribution_cbfit_canvas("adc_sum_distribution_cbfit_canvas", "ADC Sum Distribution CB Fit Canvas", 800, 600);
+        canvas_info = "Crystal Ball Fitted ADC, Run " + script_input_run_number;
+        TH1D* h1_adc_sum_distribution_cbfit = (TH1D*) h1_adc_sum_distribution->Clone("h1_adc_sum_distribution_cbfit");
+        format_1d_hist_canvas(&adc_sum_distribution_cbfit_canvas, h1_adc_sum_distribution_cbfit, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
 
     // use the same fitting range as gaussian fit
     std::vector<double> cb_fit_results_means;
@@ -730,12 +862,6 @@ int main(int argc, char **argv) {
             cb_fit_results_chi2s.push_back(fit_chi2);
             cb_fit_results_ndfs.push_back(fit_ndf);
 
-            // calculate effective sigma (68.3% quantile)
-            // double q16 = quantile_from_tf1(cb_fit_real, 0.158655253931, h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmin(), h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmax());
-            // double q84 = quantile_from_tf1(cb_fit_real, 0.841344746069, h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmin(), h1_adc_sum_distribution_cbfit->GetXaxis()->GetXmax());
-            // double effective_sigma = (q84 - q16) / 2.0;
-            // double effective_sigma_err = fit_sigma_err;
-
             // define effective sigma as 67% area for better stability
             double prob[2] = {0.158655253931, 0.841344746069};
             double quantiles[2];
@@ -743,11 +869,6 @@ int main(int argc, char **argv) {
             double effective_sigma = (quantiles[1] - quantiles[0]) / 2.0;
             // give gaussian estimate for effective sigma error
             double effective_sigma_err = fit_sigma_err;
-
-            // define effective sigma from RMS 90
-            // auto r = computeMeanRMS90(h1_adc_sum_distribution_cbfit);
-            // double effective_sigma = r.sigma_gauss;
-            // double effective_sigma_err = r.err_sigma_gauss;
 
             cb_fit_results_eff_sigmas.push_back(effective_sigma);
             cb_fit_results_eff_sigma_errs.push_back(effective_sigma_err);
@@ -762,29 +883,19 @@ int main(int argc, char **argv) {
         }
     }
 
-    double cb_mean_avg=0.0;
-    double cb_mean_err_sys=0.0;
-    double cb_mean_err_stat=0.0;
-    double cb_sigma_avg=0.0;
-    double cb_sigma_err_sys=0.0;
-    double cb_sigma_err_stat=0.0;
-    double cb_effective_sigma_avg=0.0;
-    double cb_effective_sigma_err_sys=0.0;
-    double cb_effective_sigma_err_stat=0.0;
-
-    spdlog::info("Calculating mean and sigma from multiple CB fit results...");
-    mean_sigma_list_calculator(
-        cb_fit_results_means,
-        cb_fit_results_mean_errs,
-        cb_fit_results_sigmas,
-        cb_fit_results_sigma_errs,
-        cb_mean_avg,
-        cb_mean_err_sys,
-        cb_mean_err_stat,
-        cb_sigma_avg,
-        cb_sigma_err_sys,
-        cb_sigma_err_stat
-    );
+        spdlog::info("Calculating mean and sigma from multiple CB fit results...");
+        mean_sigma_list_calculator(
+            cb_fit_results_means,
+            cb_fit_results_mean_errs,
+            cb_fit_results_sigmas,
+            cb_fit_results_sigma_errs,
+            cb_mean_avg,
+            cb_mean_err_sys,
+            cb_mean_err_stat,
+            cb_sigma_avg,
+            cb_sigma_err_sys,
+            cb_sigma_err_stat
+        );
 
     // do another round for effective sigma
     mean_sigma_list_calculator(
@@ -802,14 +913,14 @@ int main(int argc, char **argv) {
     spdlog::info("CB Mean: {} +/- {} (stat) +/- {} (sys)", cb_mean_avg, cb_mean_err_stat, cb_mean_err_sys);
     spdlog::info("CB Sigma: {} +/- {} (stat) +/- {} (sys)", cb_sigma_avg, cb_sigma_err_stat, cb_sigma_err_sys);
     spdlog::info("CB Effective Sigma: {} +/- {} (stat) +/- {} (sys)", cb_effective_sigma_avg, cb_effective_sigma_err_stat, cb_effective_sigma_err_sys);
-    double cb_resolution = (cb_sigma_avg / cb_mean_avg) * 100.0;
+    cb_resolution = (cb_sigma_avg / cb_mean_avg) * 100.0;
     double cb_mean_err = std::sqrt(cb_mean_err_stat * cb_mean_err_stat + cb_mean_err_sys * cb_mean_err_sys);
-    double cb_sigma_err = std::sqrt(cb_sigma_err_stat * cb_sigma_err_stat + cb_sigma_err_sys * cb_sigma_err_sys);
-    double cb_resolution_err = cb_resolution * std::sqrt( (cb_sigma_err / cb_sigma_avg) * (cb_sigma_err / cb_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
+    cb_sigma_err = std::sqrt(cb_sigma_err_stat * cb_sigma_err_stat + cb_sigma_err_sys * cb_sigma_err_sys);
+    cb_resolution_err = cb_resolution * std::sqrt( (cb_sigma_err / cb_sigma_avg) * (cb_sigma_err / cb_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
     spdlog::info("Calculated CB Resolution: {} % +/- {} %", cb_resolution, cb_resolution_err);
-    double cb_effective_resolution = (cb_effective_sigma_avg / cb_mean_avg) * 100.0;
     double cb_effective_sigma_err = std::sqrt(cb_effective_sigma_err_stat * cb_effective_sigma_err_stat + cb_effective_sigma_err_sys * cb_effective_sigma_err_sys);
-    double cb_effective_resolution_err = cb_effective_resolution * std::sqrt( (cb_effective_sigma_err / cb_effective_sigma_avg) * (cb_effective_sigma_err / cb_effective_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
+    cb_effective_resolution = (cb_effective_sigma_avg / cb_mean_avg) * 100.0;
+    cb_effective_resolution_err = cb_effective_resolution * std::sqrt( (cb_effective_sigma_err / cb_effective_sigma_avg) * (cb_effective_sigma_err / cb_effective_sigma_avg) + (cb_mean_err / cb_mean_avg) * (cb_mean_err / cb_mean_avg) );
     spdlog::info("Calculated CB Effective Resolution: {} % +/- {} %", cb_effective_resolution, cb_effective_resolution_err);
 
     // add additional statistics
@@ -849,14 +960,14 @@ int main(int argc, char **argv) {
     // pave_stats_cbfit->AddText(cb_effective_resolution_text.c_str());
     pave_stats_cbfit->Draw();
 
-    adc_sum_distribution_cbfit_canvas.Modified();
-    adc_sum_distribution_cbfit_canvas.Update();
-    adc_sum_distribution_cbfit_canvas.Print(out_pdf.c_str());
-    std::string cbfit_pic_file_name = script_output_file.substr(0, script_output_file.find_last_of(".")) + "_cbfit.pdf";
-    adc_sum_distribution_cbfit_canvas.SaveAs(cbfit_pic_file_name.c_str());
-    adc_sum_distribution_cbfit_canvas.Write();
-    adc_sum_distribution_cbfit_canvas.Close();
-
+        adc_sum_distribution_cbfit_canvas.Modified();
+        adc_sum_distribution_cbfit_canvas.Update();
+        adc_sum_distribution_cbfit_canvas.Print(out_pdf.c_str());
+        std::string cbfit_pic_file_name = script_output_file.substr(0, script_output_file.find_last_of(".")) + "_cbfit.pdf";
+        adc_sum_distribution_cbfit_canvas.SaveAs(cbfit_pic_file_name.c_str());
+        adc_sum_distribution_cbfit_canvas.Write();
+        adc_sum_distribution_cbfit_canvas.Close();
+    }
 
     // ! =====================================================================================
 
@@ -866,53 +977,55 @@ int main(int argc, char **argv) {
     end_canvas.Print((out_pdf + "]").c_str());
     end_canvas.Close();
 
-    // write important values for comparison
-    TParameter<double> param_gaus_fit_mean("gaus_fit_mean", mean_avg); 
-    TParameter<double> param_gaus_fit_sigma("gaus_fit_sigma", sigma_avg);
-    TParameter<double> param_gaus_fit_resolution("gaus_fit_resolution", resolution);
-    TParameter<double> param_gaus_fit_mean_err_stat("gaus_fit_mean_err_stat", mean_err_stat);
-    TParameter<double> param_gaus_fit_mean_err_sys("gaus_fit_mean_err_sys", mean_err_sys);
-    TParameter<double> param_gaus_fit_sigma_err_stat("gaus_fit_sigma_err_stat", sigma_err);
-    TParameter<double> param_gaus_fit_sigma_err_sys("gaus_fit_sigma_err_sys", sigma_err);
-    TParameter<double> param_gaus_fit_resolution_err("gaus_fit_resolution_err", resolution_err);
+    if (has_adc_sum_stats) {
+        // write important values for comparison
+        TParameter<double> param_gaus_fit_mean("gaus_fit_mean", mean_avg); 
+        TParameter<double> param_gaus_fit_sigma("gaus_fit_sigma", sigma_avg);
+        TParameter<double> param_gaus_fit_resolution("gaus_fit_resolution", resolution);
+        TParameter<double> param_gaus_fit_mean_err_stat("gaus_fit_mean_err_stat", mean_err_stat);
+        TParameter<double> param_gaus_fit_mean_err_sys("gaus_fit_mean_err_sys", mean_err_sys);
+        TParameter<double> param_gaus_fit_sigma_err_stat("gaus_fit_sigma_err_stat", sigma_err);
+        TParameter<double> param_gaus_fit_sigma_err_sys("gaus_fit_sigma_err_sys", sigma_err);
+        TParameter<double> param_gaus_fit_resolution_err("gaus_fit_resolution_err", resolution_err);
 
-    TParameter<double> param_cb_fit_mean("cb_fit_mean", cb_mean_avg);
-    TParameter<double> param_cb_fit_sigma("cb_fit_sigma", cb_sigma_avg);
-    TParameter<double> param_cb_fit_effective_sigma("cb_fit_effective_sigma", cb_effective_sigma_avg);
-    TParameter<double> param_cb_fit_resolution("cb_fit_resolution", cb_resolution);
-    TParameter<double> param_cb_fit_effective_resolution("cb_fit_effective_resolution", cb_effective_resolution);
-    TParameter<double> param_cb_fit_mean_err_stat("cb_fit_mean_err_stat", cb_mean_err_stat);
-    TParameter<double> param_cb_fit_mean_err_sys("cb_fit_mean_err_sys", cb_mean_err_sys);
-    TParameter<double> param_cb_fit_sigma_err_stat("cb_fit_sigma_err_stat", cb_sigma_err);
-    TParameter<double> param_cb_fit_sigma_err_sys("cb_fit_sigma_err_sys", cb_sigma_err);
-    TParameter<double> param_cb_fit_effective_sigma_err_stat("cb_fit_effective_sigma_err_stat", cb_effective_sigma_err_stat);
-    TParameter<double> param_cb_fit_effective_sigma_err_sys("cb_fit_effective_sigma_err_sys", cb_effective_sigma_err_sys);
-    TParameter<double> param_cb_fit_resolution_err("cb_fit_resolution_err", cb_resolution_err);
-    TParameter<double> param_cb_fit_effective_resolution_err("cb_fit_effective_resolution_err", cb_effective_resolution_err);
+        TParameter<double> param_cb_fit_mean("cb_fit_mean", cb_mean_avg);
+        TParameter<double> param_cb_fit_sigma("cb_fit_sigma", cb_sigma_avg);
+        TParameter<double> param_cb_fit_effective_sigma("cb_fit_effective_sigma", cb_effective_sigma_avg);
+        TParameter<double> param_cb_fit_resolution("cb_fit_resolution", cb_resolution);
+        TParameter<double> param_cb_fit_effective_resolution("cb_fit_effective_resolution", cb_effective_resolution);
+        TParameter<double> param_cb_fit_mean_err_stat("cb_fit_mean_err_stat", cb_mean_err_stat);
+        TParameter<double> param_cb_fit_mean_err_sys("cb_fit_mean_err_sys", cb_mean_err_sys);
+        TParameter<double> param_cb_fit_sigma_err_stat("cb_fit_sigma_err_stat", cb_sigma_err);
+        TParameter<double> param_cb_fit_sigma_err_sys("cb_fit_sigma_err_sys", cb_sigma_err);
+        TParameter<double> param_cb_fit_effective_sigma_err_stat("cb_fit_effective_sigma_err_stat", cb_effective_sigma_err_stat);
+        TParameter<double> param_cb_fit_effective_sigma_err_sys("cb_fit_effective_sigma_err_sys", cb_effective_sigma_err_sys);
+        TParameter<double> param_cb_fit_resolution_err("cb_fit_resolution_err", cb_resolution_err);
+        TParameter<double> param_cb_fit_effective_resolution_err("cb_fit_effective_resolution_err", cb_effective_resolution_err);
 
-    output_root->cd();
-    param_gaus_fit_mean.Write();
-    param_gaus_fit_sigma.Write();
-    param_gaus_fit_resolution.Write();
-    param_gaus_fit_mean_err_stat.Write();
-    param_gaus_fit_mean_err_sys.Write();
-    param_gaus_fit_sigma_err_stat.Write();
-    param_gaus_fit_sigma_err_sys.Write();
-    param_gaus_fit_resolution_err.Write();
+        output_root->cd();
+        param_gaus_fit_mean.Write();
+        param_gaus_fit_sigma.Write();
+        param_gaus_fit_resolution.Write();
+        param_gaus_fit_mean_err_stat.Write();
+        param_gaus_fit_mean_err_sys.Write();
+        param_gaus_fit_sigma_err_stat.Write();
+        param_gaus_fit_sigma_err_sys.Write();
+        param_gaus_fit_resolution_err.Write();
 
-    param_cb_fit_mean.Write();
-    param_cb_fit_sigma.Write();
-    param_cb_fit_effective_sigma.Write();
-    param_cb_fit_resolution.Write();
-    param_cb_fit_effective_resolution.Write();
-    param_cb_fit_mean_err_stat.Write();
-    param_cb_fit_mean_err_sys.Write();
-    param_cb_fit_sigma_err_stat.Write();
-    param_cb_fit_sigma_err_sys.Write();
-    param_cb_fit_effective_sigma_err_stat.Write();
-    param_cb_fit_effective_sigma_err_sys.Write();
-    param_cb_fit_resolution_err.Write();
-    param_cb_fit_effective_resolution_err.Write();
+        param_cb_fit_mean.Write();
+        param_cb_fit_sigma.Write();
+        param_cb_fit_effective_sigma.Write();
+        param_cb_fit_resolution.Write();
+        param_cb_fit_effective_resolution.Write();
+        param_cb_fit_mean_err_stat.Write();
+        param_cb_fit_mean_err_sys.Write();
+        param_cb_fit_sigma_err_stat.Write();
+        param_cb_fit_sigma_err_sys.Write();
+        param_cb_fit_effective_sigma_err_stat.Write();
+        param_cb_fit_effective_sigma_err_sys.Write();
+        param_cb_fit_resolution_err.Write();
+        param_cb_fit_effective_resolution_err.Write();
+    }
     
 
     output_root->Close();
@@ -921,26 +1034,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-// inline double crystallball_left(double *x, double *par) {
-//     // par[0] = A
-//     // par[1] = a
-//     // par[2] = n
-//     // par[3] = mean
-//     // par[4] = sigma
-//     const double N      = par[0];
-//     const double alpha  = par[1];
-//     const double n      = par[2];
-//     const double mean   = par[3];
-//     const double sigma  = par[4];
-
-//     double z = (x[0] - mean) / sigma;
-//     if (z > -alpha) {
-//         return N * exp(-0.5 * z * z);
-//     } else {
-//         double A = pow(n / fabs(alpha), n) * exp(-0.5 * alpha * alpha);
-//         double B = n / fabs(alpha) - fabs(alpha);
-//         return N * A * pow(B - z, -n);
-//     }
-// }
-

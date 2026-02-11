@@ -719,6 +719,42 @@ inline double find_leading_toa(const std::vector<double>& toa_list, const std::v
     return tsum / static_cast<double>(M);
 }
 
+// find the leading ToA by both ADC and ToT
+inline double find_leading_toa_tot(const std::vector<double>& toa_list, const std::vector<double>& adc_list, const std::vector<double>& tot_list, int n_max_adc=4, int n_min_toa=2){
+    struct Hit { double t; double A; double T; };
+    std::vector<Hit> hits;
+    const int N = (int)toa_list.size();
+    for (int i=0;i<N;++i){
+        double t = toa_list[i];
+        double A = adc_list[i];
+        double T = tot_list[i];
+        if (std::isfinite(t) && std::isfinite(A) && std::isfinite(T)){
+            hits.push_back({t,A,T});
+        }
+    }
+    if (hits.size() == 0) return std::numeric_limits<double>::quiet_NaN();
+
+    // find the top n_max_adc by ADC
+    const int K = std::min(n_max_adc, (int)hits.size());
+    std::nth_element(hits.begin(), hits.begin()+K-1, hits.end(),
+                     [](const Hit& a, const Hit& b){ return a.A > b.A; });
+    // if any of them have ToT > 0, then find the top n_min_toa among those with ToT > 0; otherwise among all K
+    std::vector<Hit> hits2;
+    for (int i=0;i<K;++i){
+        if (hits[i].T > 0.0) hits2.push_back(hits[i]);
+    }
+    if (hits2.empty()){
+        hits2.assign(hits.begin(), hits.begin()+K);
+    }
+    const int M = std::min(n_min_toa, (int)hits2.size());
+    std::nth_element(hits2.begin(), hits2.begin()+M-1, hits2.end(),
+                     [](const Hit& a, const Hit& b){ return a.t < b.t; });
+    // average the M earliest ToAs
+    double tsum = 0.0;
+    for (int i=0;i<M;++i) tsum += hits2[i].t;
+    return tsum / static_cast<double>(M);
+}
+
 inline double decode_toa_value_ns_with_dnl(UInt_t val2, std::vector<double>& coarse_dnl_lookup, std::vector<double>& fine_dnl_lookup) {
     constexpr double scale0 = 0.025;
     constexpr double scale1 = 0.2;

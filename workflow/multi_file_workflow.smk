@@ -56,6 +56,7 @@ def _inputs_for_outfile_305(outfile_name: str):
     for n in cfg.get("run_numbers", []):
         rn = f"{int(n):04d}"
         ins.append(f"{DUMP_DIR}/304_RawADC/beamtests/Run{rn}.root")
+        # ins.append(f"{DUMP_DIR}/318_Clustering/beamtests/Run{rn}.root")
     return ins
 
 OUTFILE_TO_CFG_312 = {}

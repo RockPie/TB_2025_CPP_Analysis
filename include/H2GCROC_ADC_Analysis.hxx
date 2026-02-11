@@ -9,15 +9,22 @@
 #include <array>
 #include <cassert>
 #include <string>
+#include <algorithm>
+#include <ctime>
 
 #include <TCanvas.h>
 #include <TPad.h>
 #include <TStyle.h>
 #include <TH1.h>
 #include <TH2.h>
+#include <TGraph.h>
 #include <TGraphErrors.h>
 #include <TObject.h>
 #include <TString.h>
+#include <TBox.h>
+#include <TMarker.h>
+#include <TF1.h>
+#include <TLatex.h>
 #include "H2GCROC_Common.hxx"
 
 #include <nlohmann/json.hpp>
@@ -447,6 +454,60 @@ struct MosaicTopology {
     }
 };
 
+inline void mapping_chn_to_xy(const std::vector<double>& channel_values,
+                              const std::vector<int>& channel_numbers,
+                              const MosaicTopology& topo,
+                              std::vector<int>& pixel_x_list,
+                              std::vector<int>& pixel_y_list,
+                              std::vector<double>* pixel_value_list = nullptr) {
+    if (!topo.valid()) return;
+    if (channel_values.size() != channel_numbers.size()) return;
+
+    pixel_x_list.clear();
+    pixel_y_list.clear();
+    if (pixel_value_list) pixel_value_list->clear();
+
+    const int pad_capacity = topo.NX * topo.NY;
+    if (pad_capacity <= 0) return;
+
+    const size_t lut_size = topo.chan2pad.size();
+    if (lut_size != static_cast<size_t>(topo.vldb_number * topo.channels_per_vldb)) return;
+
+    std::vector<std::pair<double, int>> value_channel_pairs;
+    value_channel_pairs.reserve(channel_values.size());
+    for (size_t i = 0; i < channel_values.size(); ++i) {
+        value_channel_pairs.emplace_back(channel_values[i], channel_numbers[i]);
+    }
+
+    std::sort(value_channel_pairs.begin(), value_channel_pairs.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  if (lhs.first == rhs.first) return lhs.second < rhs.second;
+                  return lhs.first > rhs.first;
+              });
+
+    std::vector<char> visited(pad_capacity, 0);
+
+    for (const auto& [value, channel] : value_channel_pairs) {
+        if (value <= 0.0) continue;
+        if (channel < 0 || channel >= static_cast<int>(lut_size)) continue;
+
+        int pad_linear = topo.chan2pad[channel];
+        if (pad_linear < 0 || pad_linear >= pad_capacity) continue;
+        if (visited[pad_linear]) continue; // keep strongest hit per pad
+        visited[pad_linear] = 1;
+
+        int col = pad_linear % topo.NX;
+        int row = pad_linear / topo.NX;
+        if (topo.reverse_row) {
+            row = (topo.NY - 1) - row;
+        }
+
+        pixel_x_list.push_back(col);
+        pixel_y_list.push_back(row);
+        if (pixel_value_list) pixel_value_list->push_back(value);
+    }
+}
+
 inline void draw_mosaic_fixed(TCanvas& canvas,
                               const std::vector<TObject*>& items,
                               const std::vector<TF1*>& fits,
@@ -720,10 +781,18 @@ std::vector<int> build_chan2pad_LUT(
             if (board_rotated == 0) {
                 uni_col = board_col * board_cols + col;
                 uni_row = board_row * board_rows + row;
+                if (board_flipped) {
+                    // horizontal flip
+                    uni_col = board_col * board_cols + (board_cols - 1 - col);
+                }
             } else {
                 // 旋转180°
                 uni_col = board_col * board_cols + (board_cols - 1 - col);
                 uni_row = board_row * board_rows + (board_rows - 1 - row);
+                if (board_flipped) {
+                    // horizontal flip
+                    uni_col = board_col * board_cols + col;
+                }
             }
 
             if (uni_col < 0 || uni_row < 0) continue;
@@ -736,6 +805,77 @@ std::vector<int> build_chan2pad_LUT(
         }
     }
     return lut;
+}
+
+inline TH2D* event_map(std::vector<std::vector<double>>& all_data, int NX, int NY) {
+    // all data is aranged as [NY][NX]
+    if (all_data.size() != (size_t)NY) {
+        return nullptr;
+    }
+    if (all_data[0].size() != (size_t)NX) {
+        return nullptr;
+    }
+    TH2D* h2_event_map = new TH2D("h2_event_map", "Event Map", NX, 0, NX, NY, 0, NY);
+    h2_event_map->SetDirectory(nullptr);
+    for (int ix = 0; ix < NX; ++ix) {
+        for (int iy = 0; iy < NY; ++iy) {
+            h2_event_map->SetBinContent(ix + 1, iy + 1, all_data[iy][ix]);
+        }
+    }
+
+    return h2_event_map;
+}
+
+inline TH2D* event_map(std::vector<double>& all_data, std::vector<int>& data_x, std::vector<int>& data_y, int NX, int NY) {
+    // sort the data into 2D grid
+    if (all_data.size() != data_x.size() || all_data.size() != data_y.size()) {
+        return nullptr;
+    }
+
+    std::vector<std::vector<double>> grid_data(NY, std::vector<double>(NX, 0.0));
+    for (size_t i = 0; i < all_data.size(); ++i) {
+        int x = data_x[i];
+        int y = data_y[i];
+        if (x < 0 || x >= NX) continue;
+        if (y < 0 || y >= NY) continue;
+        grid_data[y][x] = all_data[i];
+    }
+
+    return event_map(grid_data, NX, NY);
+}
+
+inline void label_pixels(TCanvas* canvas, std::vector<int> pixel_x_list, std::vector<int> pixel_y_list) {
+    if (!canvas) return;
+    if (pixel_x_list.size() != pixel_y_list.size()) return;
+
+    canvas->cd();
+    for (size_t i = 0; i < pixel_x_list.size(); ++i) {
+        int px = pixel_x_list[i];
+        int py = pixel_y_list[i];
+        TBox* box = new TBox(px, py, px + 1, py + 1);
+        box->SetLineColorAlpha(kRed, 0.2);
+        box->SetLineWidth(2);
+        box->SetFillStyle(0);
+        box->Draw("SAME");
+    }
+}
+inline void label_markers(TCanvas* canvas,
+                          const std::vector<double>& x_positions,
+                          const std::vector<double>& y_positions,
+                          const std::vector<int>& marker_styles = {}) {
+    if (!canvas) return;
+    if (x_positions.size() != y_positions.size()) return;
+    const bool use_styles = !marker_styles.empty();
+    if (use_styles && marker_styles.size() != x_positions.size()) return;
+
+    canvas->cd();
+    for (size_t i = 0; i < x_positions.size(); ++i) {
+        const int style = use_styles ? marker_styles[i] : 20;
+        auto* marker = new TMarker(x_positions[i], y_positions[i], style);
+        marker->SetMarkerColor(kRed);
+        marker->SetMarkerSize(1.5);
+        marker->Draw("SAME");
+    }
 }
 
 #endif // H2GCROC_ADC_ANALYSIS_HXX

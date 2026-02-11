@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> run_files;
 
     const std::string run_file_folder = "dump/304_RawADC/beamtests/";
+    // const std::string run_file_folder = "dump/318_Clustering/beamtests/";
     // try to find the input root file from run number
     if (run_numbers.empty()) {
         spdlog::error("No run numbers specified in config json file {}", script_input_file);
@@ -196,7 +197,7 @@ int main(int argc, char **argv) {
     spdlog::info("Output file: {} in {}", script_output_file, script_output_folder);
     spdlog::info("Number of events: {}", script_n_events);
 
-    // std::string mapping_json_file = "config/mapping_Oct2025.json";
+    // std::string mapping_json_file = "config/mapping_Feb2026.json";
     // std::ifstream mapping_json_ifs(mapping_json_file);
     // if (!mapping_json_ifs.is_open()) {
     //     spdlog::error("Failed to open mapping json file {}", mapping_json_file);

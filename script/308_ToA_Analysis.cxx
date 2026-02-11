@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
         spdlog::warn("Output file {} already exists!", script_output_file);
     }
 
-    std::string mapping_json_file = "config/mapping_Oct2025.json";
+    std::string mapping_json_file = "config/mapping_Feb2026.json";
     std::ifstream mapping_json_ifs(mapping_json_file);
     if (!mapping_json_ifs.is_open()) {
         spdlog::error("Failed to open mapping json file {}", mapping_json_file);
