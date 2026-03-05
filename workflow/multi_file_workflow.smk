@@ -6,6 +6,7 @@ CONFIG_DIR_106 = "config"
 CONFIG_DIR_305 = "config"
 CONFIG_DIR_312 = "config"
 CONFIG_DIR_317 = "config"
+CONFIG_DIR_322 = "config"
 DUMP_DIR = globals().get("DUMP_DIR", "dump")
 BIN_DIR  = globals().get("BIN_DIR",  "build/bin/scripts")
 LOG_DIR  = globals().get("LOG_DIR",  "log")
@@ -56,7 +57,7 @@ def _inputs_for_outfile_305(outfile_name: str):
     for n in cfg.get("run_numbers", []):
         rn = f"{int(n):04d}"
         ins.append(f"{DUMP_DIR}/304_RawADC/beamtests/Run{rn}.root")
-        # ins.append(f"{DUMP_DIR}/318_Clustering/beamtests/Run{rn}.root")
+        #ins.append(f"{DUMP_DIR}/318_Clustering/beamtests/Run{rn}.root")
     return ins
 
 OUTFILE_TO_CFG_312 = {}
@@ -101,11 +102,34 @@ def _inputs_for_outfile_317(outfile_name: str):
         ins.append(f"{DUMP_DIR}/316_ADC_ToT/beamtests/Run{rn}.root")
     return ins
 
+OUTFILE_TO_CFG_322 = {}
+# 322 is from 314_ToA_Analysis_LUT output
+for p in sorted(Path(CONFIG_DIR_322).glob("322_*.json")):
+    cfg = _read_json(p)
+    out_name = cfg.get("output_file_name")
+    if not out_name:
+        # fallback: use stem + .root if not provided
+        out_name = f"{p.stem}.root"
+    if out_name in OUTFILE_TO_CFG_322 and str(OUTFILE_TO_CFG_322[out_name]) != str(p):
+        raise ValueError(f"Duplicate output_file_name '{out_name}' in {p} and {OUTFILE_TO_CFG_322[out_name]}")
+    OUTFILE_TO_CFG_322[out_name] = str(p)
+
+def _inputs_for_outfile_322(outfile_name: str):
+    """Get upstream inputs for a given final outfile name, using the mapped config."""
+    cfg_path = OUTFILE_TO_CFG_322[outfile_name]
+    cfg = _read_json(cfg_path)
+    ins = []
+    for n in cfg.get("run_numbers", []):
+        rn = f"{int(n):04d}"
+        ins.append(f"{DUMP_DIR}/314_ToA_Analysis_LUT/beamtests/Run{rn}.root")
+    return ins
+
 # All final outputs discovered now (parse-time)
 ALL_106_OUTPUTS = [f"{DUMP_DIR}/106_ADC_Compare/{name}" for name in OUTFILE_TO_CFG_106.keys()]
 ALL_305_OUTPUTS = [f"{DUMP_DIR}/305_ADC_Fit_Compare/{name}" for name in OUTFILE_TO_CFG_305.keys()]
 ALL_312_OUTPUTS = [f"{DUMP_DIR}/312_ToT_Fit_Compare/{name}" for name in OUTFILE_TO_CFG_312.keys()]
 ALL_317_OUTPUTS = [f"{DUMP_DIR}/317_ADC_ToT_Fit_Compare/{name}" for name in OUTFILE_TO_CFG_317.keys()]
+ALL_322_OUTPUTS = [f"{DUMP_DIR}/322_ToA_ADC_Compare/{name}" for name in OUTFILE_TO_CFG_322.keys()]
 
 # ----- 106: main rule --------------------------------------------------------
 rule ADC_Compare_106:
@@ -131,7 +155,7 @@ rule ADC_Compare_106:
 rule ADC_Fit_Compare_305:
     """
     Build one fit comparison result from its output filename.
-    The corresponding config is looked up by OUTFILE_TO_CFG_106[outfile].
+    The corresponding config is looked up by OUTFILE_TO_CFG_305[outfile].
     """
     input:
         exe  = f"{BIN_DIR}/305_ADC_Fit_Compare",
@@ -187,6 +211,27 @@ rule ADC_ToT_Fit_Compare_317:
         "{input.exe}" -f "{input.cfg}" -o "{output.out}" > "{log}" 2>&1
         """
 
+# ----- 322: main rule --------------------------------------------------------
+# script/322_ToA_ADC_Compare.cxx
+rule ToA_Compare_322:
+    """
+    Build one ToA comparison result from its output filename.
+    The corresponding config is looked up by OUTFILE_TO_CFG_322[outfile].
+    """
+    input:
+        exe  = f"{BIN_DIR}/322_ToA_ADC_Compare",
+        cfg  = lambda wc: OUTFILE_TO_CFG_322[f"{wc.outfile}.root"],
+        runs = lambda wc: _inputs_for_outfile_322(f"{wc.outfile}.root")
+    output:
+        out  = f"{DUMP_DIR}/322_ToA_ADC_Compare/{{outfile}}.root"
+    log:    
+        f"{LOG_DIR}/322_ToA_ADC_Compare/{{outfile}}.log"
+    shell:
+        r"""
+        mkdir -p "{DUMP_DIR}/322_ToA_ADC_Compare" "{LOG_DIR}/322_ToA_ADC_Compare"
+        "{input.exe}" -f "{input.cfg}" -o "{output.out}" > "{log}" 2>&1
+        """
+
 # ----- 106: convenience target ----------------------------------------------
 rule run_all_106:
     """
@@ -207,3 +252,9 @@ rule run_all_312:
     Run all configs starting with 312_*.json in config/.
     """
     input: ALL_312_OUTPUTS
+
+rule run_all_322:
+    """
+    Run all configs starting with 322_*.json in config/.
+    """
+    input: ALL_322_OUTPUTS

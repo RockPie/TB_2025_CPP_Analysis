@@ -419,7 +419,7 @@ int main(int argc, char **argv) {
 
     // Second pass: draw with correct range
     bool first_hist_drawn = false;
-    TLegend *legend_example_fine_tdc = new TLegend(0.8,0.5,0.89,0.89);
+    TLegend *legend_example_fine_tdc = new TLegend(0.6,0.5,0.89,0.89);
     legend_example_fine_tdc->SetBorderSize(0);
     legend_example_fine_tdc->SetFillStyle(0);
     for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
@@ -451,11 +451,14 @@ int main(int argc, char **argv) {
             legend_example_fine_tdc->AddEntry(h1d_fine_tdc_copy, ("Ch" + std::to_string(chn)).c_str(), "l");
         }
     }
+    legend_example_fine_tdc->SetNColumns(3);
     legend_example_fine_tdc->Draw();
     example_fine_tdc_codes_canvas->Modified();
     example_fine_tdc_codes_canvas->Update();
     example_fine_tdc_codes_canvas->Print(out_pdf.c_str());
     example_fine_tdc_codes_canvas->Write();
+    std::string example_fine_tdc_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + "_example_fine_tdc.pdf";
+    example_fine_tdc_codes_canvas->SaveAs(example_fine_tdc_pdf.c_str());
     example_fine_tdc_codes_canvas->Close();
 
     // Draw the example coarse TDC codes
@@ -477,7 +480,7 @@ int main(int argc, char **argv) {
 
     // Second pass: draw with correct range
     first_hist_drawn = false;
-    TLegend *legend_example_coarse_tdc = new TLegend(0.8,0.5,0.89,0.89);
+    TLegend *legend_example_coarse_tdc = new TLegend(0.6,0.5,0.89,0.89);
     legend_example_coarse_tdc->SetBorderSize(0);
     legend_example_coarse_tdc->SetFillStyle(0);
     for (int chn = 0; chn < FPGA_CHANNEL_NUMBER*vldb_number; chn++) {
@@ -500,11 +503,15 @@ int main(int argc, char **argv) {
             legend_example_coarse_tdc->AddEntry(h1d_coarse_tdc_copy, ("Ch" + std::to_string(chn)).c_str(), "l");
         }
     }
+    legend_example_coarse_tdc->SetNColumns(3);
     legend_example_coarse_tdc->Draw();
     example_coarse_tdc_codes_canvas->Modified();
     example_coarse_tdc_codes_canvas->Update();
     example_coarse_tdc_codes_canvas->Print(out_pdf.c_str());
     example_coarse_tdc_codes_canvas->Write();
+    // save as a separate pdf file
+    std::string example_coarse_tdc_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + "_example_coarse_tdc.pdf";
+    example_coarse_tdc_codes_canvas->SaveAs(example_coarse_tdc_pdf.c_str());
     example_coarse_tdc_codes_canvas->Close();
 
 

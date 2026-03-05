@@ -141,7 +141,7 @@ inline void draw_on_pad(TPad* pad, TObject* obj, bool minimalist_axis, bool th2_
             auto *xa = h2->GetXaxis(), *ya = h2->GetYaxis(), *za = h2->GetZaxis();
             if (xa) { xa->SetLabelSize(0); xa->SetTitleSize(0); xa->SetTickLength(0); }
             if (ya) { ya->SetLabelSize(0); ya->SetTitleSize(0); ya->SetTickLength(0); }
-            if (za) { za->SetLabelSize(0); za->SetTitleSize(0); }
+            if (za) { za->SetLabelSize(0); za->SetTitleSize(0); za->SetTickLength(0); }
         }
         pad->Modified();
         return;

@@ -396,8 +396,12 @@ int main(int argc, char **argv) {
     // leave some margin for legend
     canvas_linearity->SetLeftMargin(0.15);
     canvas_linearity->SetBottomMargin(0.10);
-    TGraphErrors* graph_linearity_gaus = new TGraphErrors();
-    TGraphErrors* graph_linearity_cb = new TGraphErrors();
+    TGraphErrors* graph_linearity_gaus = new TGraphErrors("graph_linearity_gaus");
+    graph_linearity_gaus->SetName("graph_linearity_gaus");
+    TGraphErrors* graph_linearity_cb = new TGraphErrors("graph_linearity_cb");
+    graph_linearity_cb->SetName("graph_linearity_cb");
+    TGraphErrors* graph_linearity_combined = new TGraphErrors("graph_linearity_combined");
+    graph_linearity_combined->SetName("graph_linearity_combined");
     for (size_t i = 0; i < list_param_gaus_fit_mean.size(); ++i) {
         double x = found_run_energies ? static_cast<double>(run_energies[i]) : static_cast<double>(i);
         double y_gaus = list_param_gaus_fit_mean[i];
@@ -408,6 +412,12 @@ int main(int argc, char **argv) {
         graph_linearity_gaus->SetPointError(i, 0.03 * x, yerr_gaus);
         graph_linearity_cb->SetPoint(i, x, y_cb);
         graph_linearity_cb->SetPointError(i, 0.03 * x, yerr_cb);
+        double y_combined = (y_gaus + y_cb) / 2.0;
+        double yerr_combined_stat = std::sqrt( std::pow(yerr_gaus, 2) + std::pow(yerr_cb, 2) ) / 2.0;
+        double yerr_combined_sys = std::abs(y_gaus - y_cb) / 2.0;
+        double yerr_combined = std::sqrt( std::pow(yerr_combined_stat, 2) + std::pow(yerr_combined_sys, 2) );
+        graph_linearity_combined->SetPoint(i, x, y_combined);
+        graph_linearity_combined->SetPointError(i, 0.03 * x, yerr_combined);
     }
     graph_linearity_gaus->SetMarkerStyle(20);
     graph_linearity_gaus->SetMarkerColor(kCyan+2);
@@ -462,7 +472,7 @@ int main(int argc, char **argv) {
     legend_linearity->AddEntry(fit_linearity_gaus, fmt::format("Fit: ADC = {:.2f}E + {:.2f}", gaus_fit_a, gaus_fit_b).c_str(), "l");
     legend_linearity->AddEntry(graph_linearity_cb, "Crystal Ball Fit Mean", "lp");
     legend_linearity->AddEntry(fit_linearity_cb, fmt::format("Fit: ADC = {:.2f}E + {:.2f}", cb_fit_a, cb_fit_b).c_str(), "l");
-    legend_linearity->Draw();
+    // legend_linearity->Draw();
 
 
     const double latex_x_start = 0.18;
@@ -484,6 +494,29 @@ int main(int argc, char **argv) {
     if (std::strftime(date_str, sizeof(date_str), "%d-%m-%Y", std::localtime(&now_c))) {
         latex_linearity.DrawLatex(latex_x_start, latex_y_start - 3 * latex_y_step, date_str);
     }
+
+    // combined
+    graph_linearity_combined->SetMarkerStyle(22);
+    graph_linearity_combined->SetMarkerColor(kBlack);
+    graph_linearity_combined->SetLineColor(kBlack);
+    graph_linearity_combined->Draw("P SAME");
+
+    // fit the combined graph
+    TF1* fit_linearity_combined = new TF1("fit_linearity_combined", "pol1", energy_axis_min, energy_axis_max);
+    fit_linearity_combined->SetLineColor(kBlack);
+    // set initial parameters from the average of the data points
+    init_a = (graph_linearity_combined->GetY()[graph_linearity_combined->GetN()-1] - graph_linearity_combined->GetY()[0]) /
+                    ( (found_run_energies ? static_cast<double>(run_energies.back()) : static_cast<double>(graph_linearity_combined->GetN()-1)) -
+                      (found_run_energies ? static_cast<double>(run_energies.front()) : 0.0) );
+    init_b = graph_linearity_combined->GetY()[0] - init_a * (found_run_energies ? static_cast<double>(run_energies.front()) : 0.0);
+    fit_linearity_combined->SetParameters(init_b, init_a);
+    graph_linearity_combined->Fit(fit_linearity_combined, "R");
+    double combined_fit_a = fit_linearity_combined->GetParameter(1);;
+    double combined_fit_b = fit_linearity_combined->GetParameter(0);
+    fit_linearity_combined->Draw("SAME");
+    legend_linearity->AddEntry(graph_linearity_combined, "Combined Fit Mean", "lp");
+    legend_linearity->AddEntry(fit_linearity_combined, fmt::format("Fit: ADC = {:.2f}E + {:.2f}", combined_fit_a, combined_fit_b).c_str(), "l");
+    legend_linearity->Draw("SAME");
 
     canvas_linearity->Print((out_pdf + "(").c_str());
     std::string out_png = out_pdf.substr(0, out_pdf.find_last_of(".")) + "_pic0.pdf";
@@ -584,8 +617,9 @@ int main(int argc, char **argv) {
     TCanvas* canvas_nonlinearity = new TCanvas("canvas_nonlinearity", "Non-Linearity vs Beam Energy", 800, 300);
     canvas_nonlinearity->SetLeftMargin(0.15);
     canvas_nonlinearity->SetBottomMargin(0.23);
-    TGraphErrors* graph_nonlinearity_gaus = new TGraphErrors();
-    TGraphErrors* graph_nonlinearity_cb = new TGraphErrors();
+    TGraphErrors* graph_nonlinearity_gaus = new TGraphErrors("graph_nonlinearity_gaus");
+    TGraphErrors* graph_nonlinearity_cb = new TGraphErrors("graph_nonlinearity_cb");
+    TGraphErrors* graph_nonlinearity_combined = new TGraphErrors("graph_nonlinearity_combined");
     for (size_t i = 0; i < list_param_gaus_fit_mean.size(); ++i) {
         double x = found_run_energies ? static_cast<double>(run_energies[i]) : static_cast<double>(i);
         double y_gaus = list_param_gaus_fit_mean[i];
@@ -602,6 +636,12 @@ int main(int argc, char **argv) {
         graph_nonlinearity_gaus->SetPointError(i, 0.03 * x, nonlinearity_gaus_err);
         graph_nonlinearity_cb->SetPoint(i, x, nonlinearity_cb);
         graph_nonlinearity_cb->SetPointError(i, 0.03 * x, nonlinearity_cb_err);
+        double nonlinearity_combined = (nonlinearity_gaus + nonlinearity_cb) / 2.0;
+        double nonlinearity_combined_err_stat = std::sqrt( std::pow(nonlinearity_gaus_err, 2) + std::pow(nonlinearity_cb_err, 2) ) / 2.0;
+        double nonlinearity_combined_err_sys = std::abs(nonlinearity_gaus - nonlinearity_cb) / 2.0;
+        double nonlinearity_combined_err = std::sqrt( std::pow(nonlinearity_combined_err_stat, 2) + std::pow(nonlinearity_combined_err_sys, 2) );
+        graph_nonlinearity_combined->SetPoint(i, x, nonlinearity_combined);
+        graph_nonlinearity_combined->SetPointError(i, 0.03 * x, nonlinearity_combined_err);
     }
     graph_nonlinearity_gaus->SetMarkerStyle(20);
     graph_nonlinearity_gaus->SetMarkerColor(kCyan+2);
@@ -619,6 +659,11 @@ int main(int argc, char **argv) {
     graph_nonlinearity_cb->SetMarkerColor(kMagenta+2);
     graph_nonlinearity_cb->SetLineColor(kMagenta+2);
     graph_nonlinearity_cb->Draw("P SAME");
+
+    graph_nonlinearity_combined->SetMarkerStyle(22);
+    graph_nonlinearity_combined->SetMarkerColor(kBlack);
+    graph_nonlinearity_combined->SetLineColor(kBlack);
+    graph_nonlinearity_combined->Draw("P SAME");
 
     // draw horizontal line at y=0
     TLine* line_zero = new TLine(energy_axis_min, 0.0, energy_axis_max, 0.0);
@@ -656,8 +701,13 @@ int main(int argc, char **argv) {
     canvas_resolution->SetLeftMargin(0.15);
     canvas_resolution->SetBottomMargin(0.10);
     TGraphErrors* graph_resolution_gaus = new TGraphErrors();
+    graph_resolution_gaus->SetName("graph_resolution_gaus");
     TGraphErrors* graph_resolution_cb = new TGraphErrors();
+    graph_resolution_cb->SetName("graph_resolution_cb");
     TGraphErrors* graph_resolution_cb_eff = new TGraphErrors();
+    graph_resolution_cb_eff->SetName("graph_resolution_cb_eff");
+    TGraphErrors* graph_resolution_combined = new TGraphErrors();
+    graph_resolution_combined->SetName("graph_resolution_combined");
     for (size_t i = 0; i < list_param_gaus_fit_resolution.size(); ++i) {
         double x = found_run_energies ? static_cast<double>(run_energies[i]) : static_cast<double>(i);
         double y_gaus = list_param_gaus_fit_resolution[i];
@@ -672,6 +722,12 @@ int main(int argc, char **argv) {
         graph_resolution_cb->SetPointError(i, 0.03 * x, yerr_cb);
         graph_resolution_cb_eff->SetPoint(i, x, y_cb_eff);
         graph_resolution_cb_eff->SetPointError(i, 0.03 * x, yerr_cb_eff);
+        double y_combined = (y_gaus + y_cb) / 2.0;
+        double yerr_combined_stat = std::sqrt( std::pow(yerr_gaus, 2) + std::pow(yerr_cb, 2) ) / 2.0;
+        double yerr_combined_sys = std::abs(y_gaus - y_cb) / 2.0;
+        double yerr_combined = std::sqrt( std::pow(yerr_combined_stat, 2) + std::pow(yerr_combined_sys, 2) );
+        graph_resolution_combined->SetPoint(i, x, y_combined);
+        graph_resolution_combined->SetPointError(i, 0.03 * x, yerr_combined);
     }
     graph_resolution_gaus->SetMarkerStyle(20);
     graph_resolution_gaus->SetMarkerColor(kCyan+2);
@@ -716,6 +772,22 @@ int main(int argc, char **argv) {
     graph_resolution_cb_eff->SetLineColor(kGreen+2);
     graph_resolution_cb_eff->Draw("P SAME");
 
+    graph_resolution_combined->SetMarkerStyle(23);
+    graph_resolution_combined->SetMarkerColor(kBlack);
+    graph_resolution_combined->SetLineColor(kBlack);
+    graph_resolution_combined->Draw("P SAME");
+
+    // fit the combined graph
+    TF1* fit_resolution_combined = new TF1("fit_resolution_combined", resolution_func, energy_axis_min, energy_axis_max, 3);
+    min_resolution = *std::min_element(graph_resolution_combined->GetY(), graph_resolution_combined->GetY() + graph_resolution_combined->GetN());
+    fit_resolution_combined->SetParameters(min_resolution, 100.0, 0.0);
+    fit_resolution_combined->SetLineColor(kBlack);
+    graph_resolution_combined->Fit(fit_resolution_combined, "RQ");
+    double combined_res_fit_a = fabs(fit_resolution_combined->GetParameter(1)); // stochastic term (already in %)
+    double combined_res_fit_b = fabs(fit_resolution_combined->GetParameter(2)); // noise term (already in %)
+    double combined_res_fit_c = fabs(fit_resolution_combined->GetParameter(0)); // constant term (already in %)
+    fit_resolution_combined->Draw("SAME");
+
     // legend
     TLegend* legend_resolution = new TLegend(0.55, 0.55, 0.90, 0.89);
     legend_resolution->SetBorderSize(0);
@@ -731,7 +803,11 @@ int main(int argc, char **argv) {
         fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}",
                     cb_res_fit_a, cb_res_fit_b, cb_res_fit_c).c_str(), "l");
     legend_resolution->AddEntry(graph_resolution_cb_eff, "68% Effective", "lp");
-    legend_resolution->Draw();
+    legend_resolution->AddEntry(graph_resolution_combined, "Combined", "lp");
+    legend_resolution->AddEntry(fit_resolution_combined,
+        fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}",
+                    combined_res_fit_a, combined_res_fit_b, combined_res_fit_c).c_str(), "l");
+    legend_resolution->Draw("SAME");
 
     latex_linearity.SetTextSize(0.05);
     latex_linearity.SetTextFont(62);
@@ -756,7 +832,10 @@ int main(int argc, char **argv) {
     canvas_resolution_to_previous->SetLeftMargin(0.15);
     canvas_resolution_to_previous->SetBottomMargin(0.10);
     TGraphErrors* graph_resolution_previous = new TGraphErrors();
+    // set name
+    graph_resolution_previous->SetName("graph_resolution_previous");
     TGraphErrors* graph_resolution_MC = new TGraphErrors();
+    graph_resolution_MC->SetName("graph_resolution_MC");
     std::vector<double> mc_energies = {60, 80, 100, 150, 200, 250, 300, 350};
     std::vector<double> mc_resolutions = {8.75, 7.1, 6.5, 5.9, 5.2, 4.3, 4.9, 5.0}; // in %
     std::vector<double> mc_resolution_errors = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
@@ -801,7 +880,9 @@ int main(int argc, char **argv) {
     fit_resolution_previous->Draw("SAME");
 
     // then draw only the crystal ball core from this analysis
-    graph_resolution_cb->Draw("P SAME");
+    // graph_resolution_cb->Draw("P SAME");
+    // draw the combined
+    graph_resolution_combined->Draw("P SAME");
 
     graph_resolution_MC->SetMarkerStyle(24);
     graph_resolution_MC->SetMarkerColor(kBlue);
@@ -825,8 +906,10 @@ int main(int argc, char **argv) {
     legend_resolution_compare->SetTextSize(legend_text_size);
     legend_resolution_compare->AddEntry(graph_resolution_previous, "FoCal-H Prototype 2", "lp");
     legend_resolution_compare->AddEntry(graph_resolution_previous, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", previous_res_fit_a, previous_res_fit_b, previous_res_fit_c).c_str(), "l");
-    legend_resolution_compare->AddEntry(graph_resolution_cb, "FoCal-H Prototype 3", "lp");
-    legend_resolution_compare->AddEntry(graph_resolution_cb, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", cb_res_fit_a, cb_res_fit_b, cb_res_fit_c).c_str(), "l");
+    // legend_resolution_compare->AddEntry(graph_resolution_cb, "FoCal-H Prototype 3", "lp");
+    // legend_resolution_compare->AddEntry(graph_resolution_cb, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", cb_res_fit_a, cb_res_fit_b, cb_res_fit_c).c_str(), "l");
+    legend_resolution_compare->AddEntry(graph_resolution_combined, "FoCal-H Prototype 3 (Combined)", "lp");
+    legend_resolution_compare->AddEntry(fit_resolution_combined, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", combined_res_fit_a, combined_res_fit_b, combined_res_fit_c).c_str(), "l");
     legend_resolution_compare->AddEntry(graph_resolution_MC, "MC for Prototype 3", "lp");
     legend_resolution_compare->AddEntry(graph_resolution_MC, fmt::format("#sigma/E = {:.2f}/#sqrt{{E}} #oplus {:.2f}/E #oplus {:.2f}", mc_res_fit_a, mc_res_fit_b, mc_res_fit_c).c_str(), "l");
     legend_resolution_compare->Draw();

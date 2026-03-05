@@ -353,6 +353,7 @@ int main(int argc, char **argv) {
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                int valid_channel_number = get_valid_fpga_channel(channel);
                 int channel_index_in_h2g = channel % 76;
                 int channel_index_in_h2g_half = channel_index_in_h2g % 38;
                 int asic_id = channel / 76;
@@ -404,8 +405,11 @@ int main(int argc, char **argv) {
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
                 double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
-                adc_sum += adc_peak_value_pede_sub;
-
+                if (valid_channel_number != -1 && valid_channel_number % 8 != 0){
+                    if (!(vldb_id == 0 && channel >= 76)){
+                        adc_sum += adc_peak_value_pede_sub;
+                    }
+                }
                 h1i_toa_frequency->Fill(tot_showup_times);
                 if (toa_showup_times >= 1) {
                     num_single_ToA++;
@@ -514,6 +518,28 @@ int main(int argc, char **argv) {
     canvas_toa_adc_max_corr->Write();
     canvas_toa_adc_max_corr->Close();
 
+    // draw the example channel 
+    TCanvas *canvas_toa_adc_corr_example = new TCanvas("canvas_toa_adc_corr_example", "ToA ADC Max Correction Example Channel", 800, 600);
+    auto h2d_example_toa_adc_corr = h2d_toa_adc_max_corr_list[chn_example];
+    h2d_example_toa_adc_corr->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
+    h2d_example_toa_adc_corr->GetYaxis()->SetTitle("Corrected ToA [ns]");
+    h2d_example_toa_adc_corr->RebinX(
+        (h2d_example_toa_adc_corr->GetNbinsX() / 96) ?
+         h2d_example_toa_adc_corr->GetNbinsX() / 96 : 1);
+    h2d_example_toa_adc_corr->GetZaxis()->SetTickLength(0);
+    h2d_example_toa_adc_corr->GetZaxis()->SetLabelSize(0);
+    h2d_example_toa_adc_corr->GetZaxis()->SetTitleSize(0);
+
+    format_2d_hist_canvas(canvas_toa_adc_corr_example, h2d_example_toa_adc_corr, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
+
+    canvas_toa_adc_corr_example->Modified();
+    canvas_toa_adc_corr_example->Update();
+    canvas_toa_adc_corr_example->Print(out_pdf.c_str());
+    canvas_toa_adc_corr_example->Write();
+    // save as a separate pdf file
+    canvas_toa_adc_corr_example->Print((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_toa_adc_corr_example.pdf").c_str());
+    canvas_toa_adc_corr_example->Close();
+
     // do the timewalk LUT generation here
     // create a new directory
     output_root->cd();
@@ -563,6 +589,11 @@ int main(int argc, char **argv) {
     h2d_example->RebinX(
         (h2d_example->GetNbinsX() / 96) ?
          h2d_example->GetNbinsX() / 96 : 1);
+    // remove the z axis completely
+    h2d_example->GetZaxis()->SetTitle("");
+    h2d_example->GetZaxis()->SetTickLength(0);
+    h2d_example->GetZaxis()->SetLabelSize(0);
+    h2d_example->GetZaxis()->SetTitleSize(0);
     format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
     TimewalkLUT lut = BuildFitFreeTimewalkLUT(h2d_example, Nmin, max_expand, enforce_monotonic);
     TLegend *legend = new TLegend(0.6, 0.7, 0.88, 0.88);
@@ -578,6 +609,8 @@ int main(int argc, char **argv) {
     canvas_toa_adc_max_corr_example->Update();
 
     canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
+    // save as a separate pdf file
+    canvas_toa_adc_max_corr_example->Print((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_toa_adc_max_corr_example.pdf").c_str());
     canvas_toa_adc_max_corr_example->Write();
     canvas_toa_adc_max_corr_example->Close();
 

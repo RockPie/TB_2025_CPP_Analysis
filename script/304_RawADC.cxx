@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
     configure_logger(false);
 
     const int example_channel = CommonParams::example_channel;
+    const int CM_channel = 9; // this is for each half of the chip, not the global channel number
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
@@ -209,6 +210,10 @@ int main(int argc, char **argv) {
     TH1D* h1_adc_peak_position = new TH1D("h1_adc_peak_position", "ADC Peak Position;Sample Index;Counts", machine_gun_samples, -0.5, machine_gun_samples - 0.5);
     h1_adc_peak_position->SetDirectory(nullptr);
 
+    // * --- ADC distribution for all channels ---
+    TH1D* h1_adc_distribution = new TH1D("h1_adc_distribution", "ADC Value Distribution;ADC Value;Counts", 256, 0, 1024);
+    h1_adc_distribution->SetDirectory(nullptr);
+
     // * --- ADC Peak Value - Channel Correlation Histogram ---
     TH2D *h2_adc_peak_channel_correlation = new TH2D(
         "h2_adc_peak_channel_correlation",
@@ -238,6 +243,7 @@ int main(int argc, char **argv) {
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                int valid_channel_number = get_valid_fpga_channel(channel);
                 std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
                 int adc_peak_index = -1;
                 UInt_t adc_peak_value = 0;
@@ -274,7 +280,9 @@ int main(int argc, char **argv) {
                 // double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_pedestal = static_cast<double>(adc_min_value);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
+                // double adc_peak_value_CM_sub = adc_peak_value_pede_sub - static_cast<double>(CM_samples[adc_peak_ranged_index]);
                 adc_peak_values_per_channel[vldb_id * FPGA_CHANNEL_NUMBER + channel].push_back(adc_peak_value_pede_sub);
+                // adc_peak_values_per_channel[vldb_id * FPGA_CHANNEL_NUMBER + channel].push_back(adc_peak_value_CM_sub);
             }
         }
     }
@@ -299,26 +307,59 @@ int main(int argc, char **argv) {
         }
     }
     spdlog::info("Global minimum dynamic range across all channels is {}", global_min_dynamic_range);
+    // Initialize common-mode samples storage for all VLDBs
+    std::vector<std::vector<std::vector<double>>> adc_samples_in_CM_channels_all_vldb(
+        vldb_number, std::vector<std::vector<double>>(4, std::vector<double>(machine_gun_samples, 0.0)));
     // start event loop
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
         double adc_sum = 0.0;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
-            // channel loop
-            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+            std::vector<std::vector<double>>& adc_samples_in_CM_channels = adc_samples_in_CM_channels_all_vldb[vldb_id];
+            for (int half = 0; half < 4; half++) {
+                int channel = half * (FPGA_CHANNEL_NUMBER / 4) + CM_channel;
                 std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
-                int adc_peak_index = -1;
-                UInt_t adc_peak_value = 0;
-                int adc_peak_ranged_index = -1;
-                UInt_t adc_peak_ranged_value = 0;
-                UInt_t adc_min_value = 1024;
+                std::vector<UInt_t> adc_samples; // all samples for common-mode calculation
                 adc_pedestal_samples.reserve(3);
+                adc_samples.reserve(machine_gun_samples);
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int idx = sample*FPGA_CHANNEL_NUMBER + channel;
                     UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
+                    if (sample < 3) {
+                        adc_pedestal_samples.push_back(adc_value);
+                    }
+                    adc_samples.push_back(adc_value);
+                } // end of sample loop
+
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
+                for (int sample = 0; sample < machine_gun_samples; sample++) {
+                    adc_samples_in_CM_channels[half][sample] = static_cast<double>(adc_samples[sample]) - adc_pedestal;
+                }
+            }
+            // channel loop
+            for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                int valid_channel_number = get_valid_fpga_channel(channel);
+                int channel_half_index = (channel / (FPGA_CHANNEL_NUMBER / 4)) % 4;
+                // skip
+                std::vector<double> CM_samples = adc_samples_in_CM_channels[channel_half_index];
+                std::vector<double> adc_pedestal_samples; // only take the first 3 samples
+                int adc_peak_index = -1;
+                double adc_peak_value = 0.0;
+                double adc_peak_value_without_CM = 0.0;
+                int adc_peak_ranged_index = -1;
+                double adc_peak_ranged_value = 0.0;
+                double adc_min_value = 1024.0;
+                adc_pedestal_samples.reserve(3);
+                for (int sample = 0; sample < machine_gun_samples; sample++) {
+                    int idx = sample*FPGA_CHANNEL_NUMBER + channel;
+                    double adc_value = static_cast<double>(val0_list_pools[vldb_id][0][idx]);
                     UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
                     UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
                     // spdlog::info("Event {} VLDB {} Channel {} Sample {}: ADC {}, ToT {}, ToA {}", entry, vldb_id, channel, sample, adc_value, tot_value, toa_value);
+                    if (adc_value > adc_peak_value_without_CM) {
+                        adc_peak_value_without_CM = adc_value;
+                    }
+                    adc_value -= CM_samples[sample]; // common-mode subtraction
                     if (sample < 3) {
                         adc_pedestal_samples.push_back(adc_value);
                     }
@@ -346,14 +387,39 @@ int main(int argc, char **argv) {
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
                 //double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
                 double adc_pedestal = static_cast<double>(adc_min_value);
+                if (valid_channel_number != -1) {
+                    if (valid_channel_number % 8 != 0) {
+                        if (vldb_id != 0 || channel < 76) {
+                            h1_adc_distribution->Fill(adc_peak_value_without_CM);
+                        }
+                    }
+                }
+                // h1_adc_distribution->Fill(adc_peak_value_without_CM);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
+                // double adc_peak_value_CM_sub = adc_peak_value_pede_sub - static_cast<double>(CM_samples[adc_peak_ranged_index]);
                 // if (adc_peak_value_pede_sub > global_min_dynamic_range) {
                 //     adc_peak_value_pede_sub = static_cast<double>(global_min_dynamic_range);
                 // }
                 if (adc_peak_value_pede_sub > 0) {
-                    h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
-                    adc_sum += adc_peak_value_pede_sub;
+                    bool do_sum_flag = true;
+                    if (valid_channel_number == -1) {
+                        do_sum_flag = false; // skip channels that are not in the valid channel list
+                    }
+                    if (valid_channel_number % 8 == 0) {
+                        do_sum_flag = false; // skip the first channel of each half, which is used for common-mode calculation and usually has lower dynamic range
+                    }
+                    if (vldb_id == 0 && channel >= 76) {
+                        do_sum_flag = false; // skip the last 4 channels of VLDB 0, which are known to be noisy and have lower dynamic range
+                    }
+                    if (do_sum_flag) {
+                        h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_pede_sub);
+                        adc_sum += adc_peak_value_pede_sub;
+                    }
                 }
+                // if (adc_peak_value_CM_sub > 0) {
+                //     h2_adc_peak_channel_correlation->Fill(channel, adc_peak_value_CM_sub);
+                //     adc_sum += adc_peak_value_CM_sub;
+                // }
             } // end of channel loop
         } // end of vldb loop
         adc_sum_list.push_back(adc_sum); // because we don't know the max adc sum value beforehand
@@ -405,6 +471,8 @@ int main(int argc, char **argv) {
     adc_waveform_canvas.Modified();
     adc_waveform_canvas.Update();
     adc_waveform_canvas.Print((out_pdf + "[").c_str()); // begin of pdf
+    // save to a separate pdf file
+    adc_waveform_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_all_waveforms.pdf").c_str());
     adc_waveform_canvas.Write();
     adc_waveform_canvas.Close();
 
@@ -421,10 +489,75 @@ int main(int argc, char **argv) {
     example_waveform_canvas.Write();
     example_waveform_canvas.Close();
 
+    // --- Draw the h1d_adc_distribution histogram with linear and log y-axis ---
+    TCanvas adc_distribution_canvas("adc_distribution_canvas", "ADC Distribution Canvas", 800, 600);
+    format_1d_hist_canvas(&adc_distribution_canvas, h1_adc_distribution, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "ADC Value Distribution", false);
+    // calculate the ratio of the last bin content (1023) to the total entries, and to the first bin content
+    double last_bin_content = h1_adc_distribution->GetBinContent(h1_adc_distribution->GetNbinsX());
+    double total_entries = h1_adc_distribution->GetEntries();
+    double first_bin_content = h1_adc_distribution->GetBinContent(1);
+    double ratio_to_total = (total_entries > 0) ? (last_bin_content / total_entries) : 0;
+    double ratio_to_first = (first_bin_content > 0) ? (last_bin_content / first_bin_content) : 0;
+    TLatex latex_adc_distribution_info;
+    latex_adc_distribution_info.SetNDC();
+    latex_adc_distribution_info.SetTextSize(0.03);
+    // std::string adc_distribution_annotation = "Entries in last bin (1023): " + format_decimal(last_bin_content, 0) + " (" + format_decimal(ratio_to_total * 100.0, 2) + "% of total, " + format_decimal(ratio_to_first, 2) + "x of first bin)";
+    // latex_adc_distribution_info.DrawLatex(0.50, 0.85, adc_distribution_annotation.c_str());
+    std::string adc_distribution_annotation_line_0 = "Last bin (1023): " + format_decimal(last_bin_content, 0) + " entries";
+    std::string adc_distribution_annotation_line_1 = "(" + format_decimal(ratio_to_total * 100.0, 2) + "% of total, " + format_decimal(ratio_to_first, 2) + "x of first bin)";
+    latex_adc_distribution_info.DrawLatex(0.50, 0.86, adc_distribution_annotation_line_0.c_str());
+    latex_adc_distribution_info.DrawLatex(0.50, 0.83, adc_distribution_annotation_line_1.c_str());
+
+    adc_distribution_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    adc_distribution_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_distribution.pdf").c_str());
+    adc_distribution_canvas.Write();
+    adc_distribution_canvas.Close();
+
+
+    // save the common-mode subtracted waveform histogram (only for CM channels)
+    for (int vldb_index = 0; vldb_index < vldb_number; vldb_index++) {
+        for (int half_index = 0; half_index < 4; half_index++) {
+            std::vector<double> CM_samples = adc_samples_in_CM_channels_all_vldb[vldb_index][half_index];
+            int channel = half_index * (FPGA_CHANNEL_NUMBER / 4) + CM_channel;
+            TH2D* h2_waveform_CM_subtracted = (TH2D*) h2_adc_waveforms[vldb_index * FPGA_CHANNEL_NUMBER + channel]->Clone(Form("h2_waveform_vldb%d_ch%d_CM_subtracted", vldb_index, channel));
+            for (int sample = 0; sample < machine_gun_samples; sample++) {
+                for (int adc_bin = 1; adc_bin <= h2_waveform_CM_subtracted->GetYaxis()->GetNbins(); adc_bin++) {
+                    double adc_value = h2_waveform_CM_subtracted->GetBinContent(sample + 1, adc_bin);
+                    double adc_value_CM_sub = adc_value - static_cast<double>(CM_samples[sample]);
+                    if (adc_value_CM_sub < 0) adc_value_CM_sub = 0;
+                    h2_waveform_CM_subtracted->SetBinContent(sample + 1, adc_bin, adc_value_CM_sub);
+                }
+            }
+            // save the common-mode subtracted histogram
+            h2_waveform_CM_subtracted->SetDirectory(nullptr);
+            h2_waveform_CM_subtracted->Write();
+        }
+        // for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+        //     int channel_half_index = (channel / (FPGA_CHANNEL_NUMBER / 4)) % 4;
+        //     std::vector<UInt_t> CM_samples = adc_samples_in_CM_channels_all_vldb[vldb_index][channel_half_index];
+        //     TH2D* h2_waveform_CM_subtracted = (TH2D*) h2_adc_waveforms[vldb_index * FPGA_CHANNEL_NUMBER + channel]->Clone(Form("h2_waveform_vldb%d_ch%d_CM_subtracted", vldb_index, channel));
+        //     for (int sample = 0; sample < machine_gun_samples; sample++) {
+        //         for (int adc_bin = 1; adc_bin <= h2_waveform_CM_subtracted->GetYaxis()->GetNbins(); adc_bin++) {
+        //             double adc_value = h2_waveform_CM_subtracted->GetBinContent(sample + 1, adc_bin);
+        //             double adc_value_CM_sub = adc_value - static_cast<double>(CM_samples[sample]);
+        //             if (adc_value_CM_sub < 0) adc_value_CM_sub = 0;
+        //             h2_waveform_CM_subtracted->SetBinContent(sample + 1, adc_bin, adc_value_CM_sub);
+        //         }
+        //     }
+        //     // save the common-mode subtracted histogram
+        //     h2_waveform_CM_subtracted->SetDirectory(nullptr);
+        //     h2_waveform_CM_subtracted->Write();
+        // }
+    }
+
+
     TCanvas adc_peak_position_canvas("adc_peak_position_canvas", "ADC Peak Position Canvas", 800, 600);
     std::string canvas_info = "ADC Peak Position Distribution";
     format_1d_hist_canvas(&adc_peak_position_canvas, h1_adc_peak_position, kBlue+2, annotation_canvas_title, annotation_testbeam_title, canvas_info);
     adc_peak_position_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    adc_peak_position_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_peak_position.pdf").c_str());
     adc_peak_position_canvas.Write();
     adc_peak_position_canvas.Close();
 
@@ -472,6 +605,8 @@ int main(int argc, char **argv) {
     pave_stats->Draw();
 
     adc_sum_distribution_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    adc_sum_distribution_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_sum_distribution.pdf").c_str());
     adc_sum_distribution_canvas.Write();
     adc_sum_distribution_canvas.Close();
 
@@ -552,6 +687,8 @@ int main(int argc, char **argv) {
     adc_sum_distribution_fitted_canvas.Modified();
     adc_sum_distribution_fitted_canvas.Update();
     adc_sum_distribution_fitted_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    adc_sum_distribution_fitted_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_sum_fit.pdf").c_str());
     adc_sum_distribution_fitted_canvas.Write();
     adc_sum_distribution_fitted_canvas.Close();
 
@@ -673,6 +810,8 @@ int main(int argc, char **argv) {
     adc_sum_distribution_gausfit_canvas.Modified();
     adc_sum_distribution_gausfit_canvas.Update();
     adc_sum_distribution_gausfit_canvas.Print(out_pdf.c_str());
+    // save to a separate pdf file
+    adc_sum_distribution_gausfit_canvas.SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_adc_sum_gausfit.pdf").c_str());
     adc_sum_distribution_gausfit_canvas.Write();
     adc_sum_distribution_gausfit_canvas.Close();
     

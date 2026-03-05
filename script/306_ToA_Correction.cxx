@@ -596,8 +596,13 @@ int main(int argc, char **argv) {
     h2d_example->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
     h2d_example->GetYaxis()->SetTitle("Raw ToA [ns]");
     format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
+    h2d_example->GetZaxis()->SetTickLength(0);
+    h2d_example->GetZaxis()->SetLabelSize(0);
+    h2d_example->GetZaxis()->SetTitleSize(0);
     canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
     canvas_toa_adc_max_corr_example->Write();
+    // save the canvas as a separate pdf file
+    canvas_toa_adc_max_corr_example->SaveAs((out_pdf + "_toa_adc_max_corr_example_chn" + std::to_string(chn_example) + ".pdf").c_str());
     canvas_toa_adc_max_corr_example->Close();
 
     TCanvas *canvas_toa_code_corr = new TCanvas("canvas_toa_code_corr", "ToA Code Correction", 1200, 800);

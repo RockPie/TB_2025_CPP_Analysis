@@ -5,8 +5,22 @@
 #include "H2GCROC_Common.hxx"
 #include "H2GCROC_ADC_Analysis.hxx"
 #include "H2GCROC_Toolbox.hxx"
+#include "H2GCROC_ToT.hxx"
 #include "TRandom3.h"
 #include "CommonParams.hxx"
+
+double reverse_Hill(double tot_decoded) {
+    double A = 3640.0;
+    double n = 0.62;
+    double x_1_2 = 0.13;
+
+    double x_0 = 5.8;
+    double x_zoom = 9.95;
+
+    double u = x_1_2 * pow((tot_decoded / (A - tot_decoded)), (1/n));
+    double x = (u / x_zoom) + x_0;
+    return x;
+}
 
 int main(int argc, char **argv) {
     gROOT->SetBatch(kTRUE);
@@ -18,6 +32,9 @@ int main(int argc, char **argv) {
     std::string script_output_folder;
 
     script_name = script_name.substr(script_name.find_last_of("/\\") + 1).substr(0, script_name.find_last_of("."));
+
+    std::string example_tot_lut_file = "config/ToTScan5.root_LUT_Channel_52.txt";
+    TotToAdcLUT lut = LoadTotToAdcLUT(example_tot_lut_file);
 
     configure_logger(false);
 
@@ -257,6 +274,7 @@ int main(int argc, char **argv) {
         input_tree->GetEntry(entry);
         double adc_sum = 0.0;
         double tot_first_decoded = 0.0;
+        double adc_estimated_from_tot_sum = 0.0;
         double adc_in_tot_channels = 0.0;
         int tot_valid_channel_count = 0;
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
@@ -312,9 +330,27 @@ int main(int argc, char **argv) {
                     adc_sum += adc_peak_value_pede_sub;
                 }
                 if (first_tot_value > 0 && adc_peak_ranged_value >= adc_saturation_threshold) {
-                    UInt_t tot_decoded = decode_tot_value(first_tot_value);
-                    if (tot_decoded > tot_baseline) {
-                        tot_first_decoded += static_cast<double>(tot_decoded);
+                    // UInt_t tot_decoded = decode_tot_value(first_tot_value);
+                    // if (tot_decoded > tot_baseline) {
+                    //     tot_first_decoded += static_cast<double>(tot_decoded);
+                    //     double adc_in_channel = adc_peak_value_pede_sub;
+                    //     adc_in_tot_channels += adc_in_channel;
+                    //     tot_valid_channel_count++;
+                    // }
+                    double tot_decoded = static_cast<double>(decode_tot_value(first_tot_value));
+                    if (tot_decoded >= 4080.0) {
+                        tot_decoded = 0.0; // cap the ToT value to avoid extreme outliers
+                    }
+                    // double adc_estimated_from_tot = lut.Eval(tot_decoded);
+                    // double adc_estimated_from_tot = 0.6285 * tot_decoded + 200;
+                    // Hill function estimation
+                    // double laser_unit_est = 5.8 + 0.1 * pow((tot_decoded / (3576.5 - tot_decoded)), (1/0.7)); // example parameters, need to be tuned
+                    // double adc_estimated_from_tot = 7100.79 * laser_unit_est - 40648.20;
+                    double laser_unit_est = reverse_Hill(tot_decoded);
+                    double adc_estimated_from_tot = 7100.0 * (laser_unit_est - 5.72);
+                    if (adc_estimated_from_tot > adc_saturation_threshold) {
+                        // tot_first_decoded += tot_decoded;
+                        adc_estimated_from_tot_sum += adc_estimated_from_tot;
                         double adc_in_channel = adc_peak_value_pede_sub;
                         adc_in_tot_channels += adc_in_channel;
                         tot_valid_channel_count++;
@@ -323,7 +359,8 @@ int main(int argc, char **argv) {
             } // end of channel loop
         } // end of vldb loop
         adc_sum_list.push_back(adc_sum);
-        tot_first_decoded_list.push_back(tot_first_decoded);
+        // tot_first_decoded_list.push_back(tot_first_decoded);
+        tot_first_decoded_list.push_back(adc_estimated_from_tot_sum);
         adc_in_tot_channels_list.push_back(adc_in_tot_channels);
         tot_valid_channel_count_list.push_back(tot_valid_channel_count);
         
@@ -737,9 +774,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < adc_sum_list.size(); i++) {
         auto adc_in_tot_value = adc_in_tot_channels_list[i];
         auto adc_sum_value = adc_sum_list[i];
-        auto tot_value = tot_first_decoded_list[i];
-        auto tot_valid_channel_count = tot_valid_channel_count_list[i];
-        double adc_tot_combined = double(adc_sum_value) - double(adc_in_tot_value) + double(tot_value) * tot_adc_slope + tot_adc_intercept * tot_valid_channel_count;
+        auto adc_estimated_from_tot_sum_event = tot_first_decoded_list[i];
+        // double adc_tot_combined = double(adc_sum_value) - double(adc_in_tot_value) + double(tot_value) * tot_adc_slope + tot_adc_intercept * tot_valid_channel_count;
+        double adc_tot_combined = static_cast<double>(adc_sum_value) - static_cast<double>(adc_in_tot_value) + adc_estimated_from_tot_sum_event;
         h1_adc_tot_combined->Fill(adc_tot_combined);
         h1_adc_sums_compared->Fill(adc_sum_value);
     }

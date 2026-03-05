@@ -392,8 +392,18 @@ inline ScriptOptions parse_arguments_single_root_single_csv(int argc, char **arg
     return opts;
 }
 
-int get_valid_fpga_channel(int fpga_channel);
-int get_total_fpga_channel(int fpga_channel);
+inline int get_valid_fpga_channel(int fpga_channel){
+    if (fpga_channel < 0 || fpga_channel >= FPGA_CHANNEL_NUMBER) {
+        throw std::out_of_range("FPGA channel out of range");
+    }
+    // for every 38 channels, channel 0, 19, 38, 57, 76, 95, 114, 133 are invalid
+    if (fpga_channel % 38 == 0 || fpga_channel % 38 == 19) {
+        return -1;
+    }
+    // else subtract the number of invalid channels before it to get the valid channel index
+    return fpga_channel - (fpga_channel / 38) * 2 - (fpga_channel % 38 > 19 ? 1 : 0);
+}
+inline int get_total_fpga_channel(int fpga_channel);
 inline int get_unified_fpga_channel(int fpga_id, int fpga_channel){
     return fpga_id * FPGA_CHANNEL_NUMBER + fpga_channel;
 }

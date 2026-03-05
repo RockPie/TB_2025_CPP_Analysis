@@ -474,12 +474,36 @@ int main(int argc, char **argv) {
     event_leading_toa_list.reserve(entry_max);
     event_adc_weighted_toa_list.reserve(entry_max);
 
-    auto dup_list = map_channels(
-        vldb_number, FPGA_CHANNEL_NUMBER,
-        NX, NY, board_cols, board_rows,
-        sipm_board, board_loc, board_rotation, board_flip,
-        ch2pid, pid2ch
+    auto chan2pad = build_chan2pad_LUT(
+        vldb_number,
+        FPGA_CHANNEL_NUMBER,
+        NX,
+        NY,
+        board_cols,
+        board_rows,
+        sipm_board,
+        board_loc,
+        board_rotation,
+        board_flip
     );
+
+    if (static_cast<int>(chan2pad.size()) != TOTAL_CH) {
+        spdlog::error("Channel-to-pad LUT size mismatch: expected {} entries, got {}", TOTAL_CH, chan2pad.size());
+        return 1;
+    }
+
+    for (int ch = 0; ch < TOTAL_CH; ++ch) {
+        int pad_linear = chan2pad[ch];
+        ch2pid[ch] = pad_linear;
+        if (pad_linear < 0 || pad_linear >= NPIX) {
+            continue;
+        }
+        if (pid2ch[pad_linear] != -1 && pid2ch[pad_linear] != ch) {
+            spdlog::warn("Pixel {} already assigned to channel {} when mapping channel {}", pad_linear, pid2ch[pad_linear], ch);
+            continue;
+        }
+        pid2ch[pad_linear] = ch;
+    }
 
     const int seed_channel = 219; // use seed channel to do two-channel toa correlation
     int seed_channel_vldb_id = seed_channel / FPGA_CHANNEL_NUMBER;
@@ -728,12 +752,6 @@ int main(int argc, char **argv) {
     std::string annotation_canvas_title = CANVAS_TITLE;
     std::string annotation_testbeam_title = TESTBEAM_TITLE;
     const std::string out_pdf = script_output_file.substr(0, script_output_file.find_last_of(".")) + ".pdf";
-
-    auto chan2pad = build_chan2pad_LUT(
-        vldb_number, FPGA_CHANNEL_NUMBER,
-        NX, NY, board_cols, board_rows,
-        sipm_board, board_loc, board_rotation, board_flip
-    );
 
     MosaicTopology topo_wave;
     topo_wave.NX = NX;
@@ -1085,6 +1103,12 @@ int main(int argc, char **argv) {
     auto h2d_example = h2d_toa_adc_max_corr_list[chn_example];
     h2d_example->GetXaxis()->SetTitle("ADC Peak (pedestal subtracted)");
     h2d_example->GetYaxis()->SetTitle("Corrected ToA [ns]");
+    // remove the z axis completely
+    h2d_example->GetZaxis()->SetTitle("");
+    h2d_example->GetZaxis()->SetTickLength(0);
+    h2d_example->GetZaxis()->SetLabelSize(0);
+    h2d_example->GetZaxis()->SetTitleSize(0);
+
     format_2d_hist_canvas(canvas_toa_adc_max_corr_example, h2d_example, kBlue+2, annotation_canvas_title, annotation_testbeam_title, "Channel_" + std::to_string(chn_example));
     canvas_toa_adc_max_corr_example->Print(out_pdf.c_str());
     // save a separate pdf file

@@ -444,7 +444,7 @@ int main(int argc, char **argv) {
                 20.0,   // neighbor threshold in ADC units
                 false,  // use diagonal neighbors
                 200.0,  // min cluster energy
-                160,    // max cluster size
+                140,    // max cluster size
                 1       // max cluster number
             );
 

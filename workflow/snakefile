@@ -29,7 +29,7 @@ def _creds():
     with open(CRED_FILE, "r") as fh:
         return json.load(fh)
 
-EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX", "301_EventReconX", "302_EventMatchX", "303_Pedestal", "304_RawADC", "305_ADC_Fit_Compare", "306_ToA_Correction", "307_ToA_Timewalk", "308_ToA_Analysis", "309_ToA_DNL", "310_ToA_Offset", "311_RawToT", "313_ToA_Timewalk_LUT", "314_ToA_Analysis_LUT", "315_ToA_Residual", "318_Clustering", "319_ADC_ToT_Clustering"]
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX", "301_EventReconX", "302_EventMatchX", "303_Pedestal", "304_RawADC", "305_ADC_Fit_Compare", "306_ToA_Correction", "307_ToA_Timewalk", "308_ToA_Analysis", "309_ToA_DNL", "310_ToA_Offset", "311_RawToT", "313_ToA_Timewalk_LUT", "314_ToA_Analysis_LUT", "315_ToA_Residual", "318_Clustering", "319_ADC_ToT_Clustering", "320_Crosstalk", "321_ToT_Analysis"]
 
 # ---- Discover valid (dtype, run) pairs ----
 pairs = []
@@ -67,6 +67,9 @@ FINAL_ADC_TOT_TARGETS = [f"{DUMP_DIR}/316_ADC_ToT/{p['dtype']}/{p['run']}.root" 
 
 FINAL_CLUSTERING_TARGETS = [f"{DUMP_DIR}/318_Clustering/{p['dtype']}/{p['run']}.root" for p in pairs]
 FINAL_ADC_TOT_CLUSTERING_TARGETS = [f"{DUMP_DIR}/319_ADC_ToT_Clustering/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_TOT_ANALYSIS_TARGETS = [f"{DUMP_DIR}/321_ToT_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_CROSSTALK_TARGETS = [f"{DUMP_DIR}/320_Crosstalk/{p['dtype']}/{p['run']}.root" for p in pairs]
+
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -94,8 +97,11 @@ rule all:
         FINAL_TOA_RESIDUAL_TARGETS,
         FINAL_ADC_TOT_TARGETS,
         ALL_317_OUTPUTS,
+        ALL_322_OUTPUTS,
         FINAL_CLUSTERING_TARGETS,
-        FINAL_ADC_TOT_CLUSTERING_TARGETS
+        FINAL_ADC_TOT_CLUSTERING_TARGETS,
+        FINAL_CROSSTALK_TARGETS,
+        FINAL_TOT_ANALYSIS_TARGETS
 
 # =========================
 # Build system integration
@@ -658,5 +664,43 @@ rule ADC_ToT_Clustering:
         mkdir -p {DUMP_DIR}/319_ADC_ToT_Clustering/{wildcards.dtype}
         mkdir -p {LOG_DIR}/319_ADC_ToT_Clustering
         mkdir -p {LOG_DIR}/319_ADC_ToT_Clustering/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 320: Crosstalk
+rule Crosstalk:
+    input:
+        exe     = f"{BIN_DIR}/320_Crosstalk",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/320_Crosstalk/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/320_Crosstalk/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/320_Crosstalk
+        mkdir -p {DUMP_DIR}/320_Crosstalk/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/320_Crosstalk
+        mkdir -p {LOG_DIR}/320_Crosstalk/{wildcards.dtype}  
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# Stage 321: ToT_Analysis
+rule ToT_Analysis:
+    input:
+        exe     = f"{BIN_DIR}/321_ToT_Analysis",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/321_ToT_Analysis/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/321_ToT_Analysis/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/321_ToT_Analysis
+        mkdir -p {DUMP_DIR}/321_ToT_Analysis/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/321_ToT_Analysis
+        mkdir -p {LOG_DIR}/321_ToT_Analysis/{wildcards.dtype}
         {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """
