@@ -652,12 +652,30 @@ int main(int argc, char **argv) {
     auto& scan_tot_list      = tot_value_in_channel_list[scan_channel_global];
     auto& scan_hill_list     = hill_in_channel_list[scan_channel_global];
 
+    // Check if there's any ToT data to scan
+    int saturated_count = 0;
+    for (size_t i = 0; i < scan_adc_raw_list.size(); i++) {
+        if (scan_adc_raw_list[i] >= 1023.0) saturated_count++;
+    }
+    spdlog::info("Channel {} has {} saturated events out of {} total events", scan_channel_global, saturated_count, scan_adc_raw_list.size());
+    
+    if (saturated_count == 0) {
+        spdlog::warn("No saturated events found, skipping Hill-ADC parameter scan");
+    } else {
+        spdlog::info("Starting Hill-ADC parameter scan: {} slope steps x {} intercept steps = {} combinations", scan_slope_steps, scan_intercept_steps, scan_slope_steps * scan_intercept_steps);
+    }
+
     // create a 2D histogram to evaluate the combination of slope and intercept
     TH2D* scan_result_hist = new TH2D("scan_result_hist", "Scan Result for Hill-ADC Slope and Intercept;Slope;Intercept", scan_slope_steps, scan_slope_min, scan_slope_max, scan_intercept_steps, scan_intercept_min, scan_intercept_max);
     TH2D* scan_prob_hist = new TH2D("scan_prob_hist", "Scan Result for Hill-ADC Slope and Intercept;Slope;Intercept", scan_slope_steps, scan_slope_min, scan_slope_max, scan_intercept_steps, scan_intercept_min, scan_intercept_max);
 
+    if (saturated_count > 0) {
     for (int slope_step = 0; slope_step < scan_slope_steps; slope_step++) {
         double slope = scan_slope_min + (scan_slope_max - scan_slope_min) * slope_step / (scan_slope_steps - 1);
+        // Progress logging every 10 slope steps
+        if (slope_step % 10 == 0) {
+            spdlog::info("Scan progress: {}/{} slope steps completed", slope_step, scan_slope_steps);
+        }
         for (int intercept_step = 0; intercept_step < scan_intercept_steps; intercept_step++) {
             double intercept = scan_intercept_min + (scan_intercept_max - scan_intercept_min) * intercept_step / (scan_intercept_steps - 1);
             // estimate the maximum adc from the combination
@@ -687,7 +705,7 @@ int main(int argc, char **argv) {
                 }
             } // end of event loop
 
-            LOG(INFO) << "Slope: " << slope << ", Intercept: " << intercept << ", Total Entries: " << total_entries << ", Tot Used Entries: " << tot_used_entries;
+            // LOG(INFO) << "Slope: " << slope << ", Intercept: " << intercept << ", Total Entries: " << total_entries << ", Tot Used Entries: " << tot_used_entries;
             double mean_adc = combined_adc_hist->GetMean();
             double rms_adc  = combined_adc_hist->GetRMS();
 
@@ -702,8 +720,6 @@ int main(int argc, char **argv) {
 
             double smoothness = SmoothnessRoughness2(combined_adc_hist);
             scan_result_hist->SetBinContent(slope_step + 1, intercept_step + 1, smoothness);
-            // perform a Kolmogorov test against the example histogram with
-
 
             if (slope_step == example_slope_step && intercept_step == example_intercept_step) {
                 TCanvas* example_canvas = new TCanvas("example_canvas", "Example Combined ADC Distribution with Hill-ADC Parameters", 800, 600);
@@ -722,21 +738,28 @@ int main(int argc, char **argv) {
             delete combined_adc_hist;
         } // end of intercept loop
     } // end of slope loop
+    spdlog::info("Scan completed, generating result plots...");
+    } // end of if (saturated_count > 0)
+    
     // draw the scan result
+    if (saturated_count > 0) {
+    spdlog::info("Saving scan result canvas...");
     auto canvas_scan_result = new TCanvas("canvas_scan_result", "Scan Result for Hill-ADC Slope and Intercept", 800, 600);
     canvas_scan_result->SetLogz();
     scan_result_hist->GetXaxis()->SetTitle("Hill-ADC Slope");
     scan_result_hist->GetYaxis()->SetTitle("Hill-ADC Intercept");
-    scan_result_hist->GetZaxis()->SetTitle("Mean ADC Value");
+    scan_result_hist->GetZaxis()->SetTitle("Smoothness Metric");
     scan_result_hist->SetStats(false);
     scan_result_hist->Draw("COLZ");
     canvas_scan_result->Modified();
     canvas_scan_result->Update();
     canvas_scan_result->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_hill_adc_scan_result.pdf").c_str());
+    spdlog::info("Scan result canvas saved");
     canvas_scan_result->Write();
     canvas_scan_result->Close();
     delete canvas_scan_result;
 
+    spdlog::info("Saving scan probability canvas...");
     auto canvas_scan_prob = new TCanvas("canvas_scan_prob", "Scan Probability for Hill-ADC Slope and Intercept", 800, 600);
     canvas_scan_prob->SetLogz();
     scan_prob_hist->GetXaxis()->SetTitle("Hill-ADC Slope");
@@ -747,10 +770,13 @@ int main(int argc, char **argv) {
     canvas_scan_prob->Modified();
     canvas_scan_prob->Update();
     canvas_scan_prob->SaveAs((script_output_file.substr(0, script_output_file.find_last_of(".")) + "_hill_adc_scan_prob.pdf").c_str());
+    spdlog::info("Scan probability canvas saved");
     canvas_scan_prob->Write();
     canvas_scan_prob->Close();
     delete canvas_scan_prob;
+    } // end of if (saturated_count > 0)
 
+    spdlog::info("Finalizing output file...");
     auto canvas_dummy = new TCanvas("canvas_dummy", "Dummy Canvas", 800, 600);
     canvas_dummy->Print((out_pdf + "]").c_str()); // end of pdf
     canvas_dummy->Close();

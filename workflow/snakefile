@@ -29,7 +29,7 @@ def _creds():
     with open(CRED_FILE, "r") as fh:
         return json.load(fh)
 
-EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX", "301_EventReconX", "302_EventMatchX", "303_Pedestal", "304_RawADC", "305_ADC_Fit_Compare", "306_ToA_Correction", "307_ToA_Timewalk", "308_ToA_Analysis", "309_ToA_DNL", "310_ToA_Offset", "311_RawToT", "313_ToA_Timewalk_LUT", "314_ToA_Analysis_LUT", "315_ToA_Residual", "318_Clustering", "319_ADC_ToT_Clustering", "320_Crosstalk", "321_ToT_Analysis"]
+EXES = ["100_RootConverter", "101_EventRecon", "102_EventMatch", "103_HitMap", "104_ADC_Analysis", "105_ToA_ToT_Starting", "106_ADC_Compare", "201_Waveform", "202_EventToA", "300_RootConverterX", "301_EventReconX", "302_EventMatchX", "303_Pedestal", "304_RawADC", "305_ADC_Fit_Compare", "306_ToA_Correction", "307_ToA_Timewalk", "308_ToA_Analysis", "309_ToA_DNL", "310_ToA_Offset", "311_RawToT", "313_ToA_Timewalk_LUT", "314_ToA_Analysis_LUT", "315_ToA_Residual", "318_Clustering", "319_ADC_ToT_Clustering", "320_Crosstalk", "321_ToT_Analysis", "324_Pileup", "325_Crosstalk_Neighbour", "501_ADC_Analysis"]
 
 # ---- Discover valid (dtype, run) pairs ----
 pairs = []
@@ -70,6 +70,11 @@ FINAL_ADC_TOT_CLUSTERING_TARGETS = [f"{DUMP_DIR}/319_ADC_ToT_Clustering/{p['dtyp
 FINAL_TOT_ANALYSIS_TARGETS = [f"{DUMP_DIR}/321_ToT_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
 FINAL_CROSSTALK_TARGETS = [f"{DUMP_DIR}/320_Crosstalk/{p['dtype']}/{p['run']}.root" for p in pairs]
 
+FINAL_PILEUP_TARGETS = [f"{DUMP_DIR}/324_Pileup/{p['dtype']}/{p['run']}.root" for p in pairs]
+FINAL_CROSSTALK_NEIGHBOUR_TARGETS = [f"{DUMP_DIR}/325_Crosstalk_Neighbour/{p['dtype']}/{p['run']}.root" for p in pairs]
+
+FINAL_501_ADC_ANALYSIS_TARGETS = [f"{DUMP_DIR}/501_ADC_Analysis/{p['dtype']}/{p['run']}.root" for p in pairs]
+
 # Also require all executables be present
 FINAL_EXES = [f"{BIN_DIR}/{name}" for name in EXES]
 
@@ -101,7 +106,10 @@ rule all:
         FINAL_CLUSTERING_TARGETS,
         FINAL_ADC_TOT_CLUSTERING_TARGETS,
         FINAL_CROSSTALK_TARGETS,
-        FINAL_TOT_ANALYSIS_TARGETS
+        FINAL_TOT_ANALYSIS_TARGETS,
+        FINAL_PILEUP_TARGETS,
+        FINAL_CROSSTALK_NEIGHBOUR_TARGETS,
+        FINAL_501_ADC_ANALYSIS_TARGETS
 
 # =========================
 # Build system integration
@@ -704,3 +712,85 @@ rule ToT_Analysis:
         mkdir -p {LOG_DIR}/321_ToT_Analysis/{wildcards.dtype}
         {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
         """
+
+rule Pileup:
+    input:
+        exe     = f"{BIN_DIR}/324_Pileup",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/324_Pileup/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/324_Pileup/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/324_Pileup
+        mkdir -p {DUMP_DIR}/324_Pileup/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/324_Pileup
+        mkdir -p {LOG_DIR}/324_Pileup/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# crosstalk neighbours take the same input as ToA_Analysis_LUT
+rule Crosstalk_Neighbour:
+    input:
+        exe     = f"{BIN_DIR}/325_Crosstalk_Neighbour",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        correction_in = f"{DUMP_DIR}/306_ToA_Correction/{{dtype}}/{{run}}.root",
+        dnl_in = f"{DUMP_DIR}/309_ToA_DNL/{{dtype}}/{{run}}.root",  
+        timewalk_in = f"{DUMP_DIR}/307_ToA_Timewalk/{{dtype}}/{{run}}.root",
+        offset_in = f"{DUMP_DIR}/310_ToA_Offset/{{dtype}}/{{run}}.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/325_Crosstalk_Neighbour/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/325_Crosstalk_Neighbour/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/325_Crosstalk_Neighbour
+        mkdir -p {DUMP_DIR}/325_Crosstalk_Neighbour/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/325_Crosstalk_Neighbour
+        mkdir -p {LOG_DIR}/325_Crosstalk_Neighbour/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -c {input.correction_in} -d {input.dnl_in} -t {input.timewalk_in} -O {input.offset_in} -o {output.root_out} > {log} 2>&1
+        """
+
+# 501 takes the same input as RawADC
+rule ADC_Analysis_501:
+    input:
+        exe     = f"{BIN_DIR}/501_ADC_Analysis",
+        root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+        params_h="include/CommonParams.hxx"
+    output:
+        root_out = f"{DUMP_DIR}/501_ADC_Analysis/{{dtype}}/{{run}}.root"
+    log:
+        f"{LOG_DIR}/501_ADC_Analysis/{{dtype}}/{{run}}.log"
+    shell:
+        r"""
+        mkdir -p {DUMP_DIR}/501_ADC_Analysis
+        mkdir -p {DUMP_DIR}/501_ADC_Analysis/{wildcards.dtype}
+        mkdir -p {LOG_DIR}/501_ADC_Analysis
+        mkdir -p {LOG_DIR}/501_ADC_Analysis/{wildcards.dtype}
+        {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+        """
+
+rule All_501:
+    input:
+        FINAL_501_ADC_ANALYSIS_TARGETS
+
+# rule RawADC:
+#     input:
+#         exe     = f"{BIN_DIR}/304_RawADC",
+#         root_in = f"{DUMP_DIR}/302_EventMatchX/{{dtype}}/{{run}}_em.root",
+#         params_h="include/CommonParams.hxx"
+#     output:
+#         root_out = f"{DUMP_DIR}/304_RawADC/{{dtype}}/{{run}}.root"
+#     log:
+#         f"{LOG_DIR}/304_RawADC/{{dtype}}/{{run}}.log"
+#     shell:
+#         r"""
+#         mkdir -p {DUMP_DIR}/304_RawADC
+#         mkdir -p {DUMP_DIR}/304_RawADC/{wildcards.dtype}
+#         mkdir -p {LOG_DIR}/304_RawADC
+#         mkdir -p {LOG_DIR}/304_RawADC/{wildcards.dtype}
+#         {input.exe} -f {input.root_in} -o {output.root_out} > {log} 2>&1
+#         """ 

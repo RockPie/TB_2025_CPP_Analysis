@@ -63,6 +63,13 @@ inline double pedestal_average_of_first3(std::vector<UInt_t>& data) {
     return (double(data[0]) + double(data[1]) + double(data[2])) / 3.0;
 }
 
+inline double pedestal_average_of_first3(std::vector<double>& data) {
+    if (data.size() < 3) {
+        return 0.0;
+    }
+    return (double(data[0]) + double(data[1]) + double(data[2])) / 3.0;
+}
+
 // sigma clipping method to calculate pedestal sigma
 // k: clipping threshold in unit of sigma
 // n_iter_max: maximum number of iterations

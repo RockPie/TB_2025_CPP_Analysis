@@ -1,0 +1,26 @@
+{
+    "scan_id": 0,
+    "description": "ES with 0.1 CC Gain, 54.5 V bias",
+    "output_file_name": "scan_0_analysis.root",
+    "beam_type": "Hadron",
+    "run_numbers": [
+        445,
+        446,
+        447,
+        448,
+        450,
+        451,
+        452,
+        453
+    ],
+    "run_energies": [
+        150,
+        200,
+        250,
+        300,
+        100,
+        80,
+        60,
+        350
+    ]
+}

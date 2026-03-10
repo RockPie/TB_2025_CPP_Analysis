@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
 
     const int example_channel = CommonParams::example_channel;
     const int CM_channel = 9; // this is for each half of the chip, not the global channel number
+    // const double saturation_effect_value = 10000.0;
     
     cxxopts::Options options(script_name, "Generate heatmaps from machine gun data");
 
@@ -227,10 +228,10 @@ int main(int argc, char **argv) {
     std::vector<double> adc_sum_list;
     adc_sum_list.reserve(entry_max);
 
-    // const int adc_peak_min_index = CommonParams::adc_peak_min_index;
-    // const int adc_peak_max_index = CommonParams::adc_peak_max_index;
-    const int adc_peak_min_index = 5;
-    const int adc_peak_max_index = 7;
+    const int adc_peak_min_index = CommonParams::adc_peak_min_index;
+    const int adc_peak_max_index = CommonParams::adc_peak_max_index;
+    // const int adc_peak_min_index = 5;
+    // const int adc_peak_max_index = 5;
 
     // print the adc peak index range
     spdlog::info("Using ADC peak index range: {} to {}", adc_peak_min_index, adc_peak_max_index);
@@ -277,8 +278,8 @@ int main(int argc, char **argv) {
                         }
                     }
                 } // end of sample loop
-                // double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
-                double adc_pedestal = static_cast<double>(adc_min_value);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = static_cast<double>(adc_min_value);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
                 // double adc_peak_value_CM_sub = adc_peak_value_pede_sub - static_cast<double>(CM_samples[adc_peak_ranged_index]);
                 adc_peak_values_per_channel[vldb_id * FPGA_CHANNEL_NUMBER + channel].push_back(adc_peak_value_pede_sub);
@@ -356,9 +357,9 @@ int main(int argc, char **argv) {
                     UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
                     UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
                     // spdlog::info("Event {} VLDB {} Channel {} Sample {}: ADC {}, ToT {}, ToA {}", entry, vldb_id, channel, sample, adc_value, tot_value, toa_value);
-                    if (adc_value > adc_peak_value_without_CM) {
-                        adc_peak_value_without_CM = adc_value;
-                    }
+                    // if (adc_value > adc_peak_value_without_CM) {
+                    //     adc_peak_value_without_CM = adc_value;
+                    // }
                     adc_value -= CM_samples[sample]; // common-mode subtraction
                     if (sample < 3) {
                         adc_pedestal_samples.push_back(adc_value);
@@ -385,8 +386,8 @@ int main(int argc, char **argv) {
                 } // end of sample loop
                 // calculate the pedestal
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
-                //double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
-                double adc_pedestal = static_cast<double>(adc_min_value);
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
+                // double adc_pedestal = static_cast<double>(adc_min_value);
                 if (valid_channel_number != -1) {
                     if (valid_channel_number % 8 != 0) {
                         if (vldb_id != 0 || channel < 76) {
@@ -396,6 +397,19 @@ int main(int argc, char **argv) {
                 }
                 // h1_adc_distribution->Fill(adc_peak_value_without_CM);
                 double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
+
+                // optional: sum up the average adc in the window
+                // double adc_sum_in_window = 0.0;
+                // for (int sample = adc_peak_min_index; sample <= adc_peak_max_index; sample++) {
+                //     int idx = sample*FPGA_CHANNEL_NUMBER + channel;
+                //     double adc_value = static_cast<double>(val0_list_pools[vldb_id][0][idx]) - CM_samples[sample] - adc_pedestal;
+                //     adc_sum_in_window += adc_value;
+                // }
+                // adc_sum_in_window /= (adc_peak_max_index - adc_peak_min_index + 1); // average ADC in the window
+                // double adc_peak_value_pede_sub = adc_sum_in_window;
+                // if (adc_peak_value_pede_sub > saturation_effect_value) {
+                //     adc_peak_value_pede_sub = saturation_effect_value; // cap the ADC peak value to mitigate the effect of saturation on the correlation plot
+                // }
                 // double adc_peak_value_CM_sub = adc_peak_value_pede_sub - static_cast<double>(CM_samples[adc_peak_ranged_index]);
                 // if (adc_peak_value_pede_sub > global_min_dynamic_range) {
                 //     adc_peak_value_pede_sub = static_cast<double>(global_min_dynamic_range);

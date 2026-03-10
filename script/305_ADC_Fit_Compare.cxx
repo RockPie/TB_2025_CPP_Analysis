@@ -839,7 +839,7 @@ int main(int argc, char **argv) {
     std::vector<double> mc_energies = {60, 80, 100, 150, 200, 250, 300, 350};
     std::vector<double> mc_resolutions = {8.75, 7.1, 6.5, 5.9, 5.2, 4.3, 4.9, 5.0}; // in %
     std::vector<double> mc_resolution_errors = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
-    std::vector<double> previous_energies = {60, 80, 100, 150, 200, 250, 300};
+    std::vector<double> previous_energies = {60, 80, 100, 150, 200, 250, 300, 350};
     std::vector<double> previous_resolutions = {0.202903,0.193606,0.180118,0.157828,0.143362,0.135984,0.128683,0.124429};
     std::vector<double> previous_resolution_errors = {0.0223685347754385,
                 0.0276764080400618,

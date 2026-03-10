@@ -58,8 +58,9 @@ int main(int argc, char **argv) {
     } else {
         spdlog::info("Determined energy label {} from file name {}", energy_label, raw_adc_analysis_root_file);
     }
-
-    std::string simulation_adc_analysis_root_file = "data/simulation/Config51/10_1000" + energy_label + "-Config51.root";
+    std::string simulation_adc_analysis_root_file = "data/simulation/Config86/10_200" + energy_label + "-Config86-M.root";
+    // std::string simulation_adc_analysis_root_file = "data/simulation/Config63/10_1000_60-Proton.root";
+    // std::string simulation_adc_analysis_root_file = "data/simulation/Config63/10_1000" + energy_label + "-Proton.root";
 
     // std::string simulation_adc_analysis_root_file = "data/simulation/Config40/10_1000_60-Config40.root";
 

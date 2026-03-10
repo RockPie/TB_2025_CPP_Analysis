@@ -215,14 +215,12 @@ int main(int argc, char **argv) {
     }
 
     // create a canvas for all 25ns histograms
-    std::vector<double> cb_fit_mean_values;
-    std::vector<double> cb_fit_mean_err_sys_values;
-    std::vector<double> cb_fit_mean_err_stat_values;
-    std::vector<double> cb_fit_sigma_values;
-    std::vector<double> cb_fit_sigma_err_sys_values;
-    std::vector<double> cb_fit_sigma_err_stat_values;
-    std::vector<double> cb_fit_resolution_values;
-    std::vector<double> cb_fit_resolution_err_values;
+    std::vector<double> mixed_fit_mean_values;
+    std::vector<double> mixed_fit_mean_err_values;
+    std::vector<double> mixed_fit_sigma_values;
+    std::vector<double> mixed_fit_sigma_err_values;
+    std::vector<double> mixed_fit_resolution_values;
+    std::vector<double> mixed_fit_resolution_err_values;
 
     std::vector<double> fit_range_sigma_values = {
         2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5
@@ -246,26 +244,24 @@ int main(int argc, char **argv) {
         } else {
             hist_adc_25ns_list[i]->Draw("E SAME");
         }
-        double fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat;
-        double fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat;
+        double fit_result_mean, fit_result_mean_err;
+        double fit_result_sigma, fit_result_sigma_err;
         double fit_result_resolution, fit_result_resolution_err;
-        TCanvas fit_canvas = TCanvas(Form("fit_canvas_%dGeV", static_cast<int>(energy)), Form("CB Fit for %.0f GeV", energy), 800, 600);
+        TCanvas fit_canvas = TCanvas(Form("fit_canvas_%dGeV", static_cast<int>(energy)), Form("Mixed Fit for %.0f GeV", energy), 800, 600);
         fit_canvas.cd();
         TH1D *fit_hist = (TH1D*)hist_adc_25ns_list[i]->Clone(Form("fit_hist_%dGeV", static_cast<int>(energy)));
         fit_hist->Rebin(2);
         fit_hist->Draw("HIST");
-        crystalball_fit_th1d(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, color_list[i % color_list.size()], fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat, fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat, fit_result_resolution, fit_result_resolution_err);
+        crystalball_gaussian_mix_fit(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, kRed, kBlue, fit_result_mean, fit_result_mean_err, fit_result_sigma, fit_result_sigma_err, fit_result_resolution, fit_result_resolution_err);
 
-        spdlog::info("Fit results for 25ns ADC at {} GeV: mean = {} +/- {} (sys) +/- {} (stat), sigma = {} +/- {} (sys) +/- {} (stat), resolution = {} +/- {}", energy, fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat, fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat, fit_result_resolution, fit_result_resolution_err);
+        spdlog::info("Fit results for 25ns ADC at {} GeV: mean = {} +/- {}, sigma = {} +/- {}, resolution = {} +/- {}", energy, fit_result_mean, fit_result_mean_err, fit_result_sigma, fit_result_sigma_err, fit_result_resolution, fit_result_resolution_err);
 
-        cb_fit_mean_values.push_back(fit_result_mean);
-        cb_fit_mean_err_sys_values.push_back(fit_result_mean_err_sys);
-        cb_fit_mean_err_stat_values.push_back(fit_result_mean_err_stat);
-        cb_fit_sigma_values.push_back(fit_result_sigma);
-        cb_fit_sigma_err_sys_values.push_back(fit_result_sigma_err_sys);
-        cb_fit_sigma_err_stat_values.push_back(fit_result_sigma_err_stat);
-        cb_fit_resolution_values.push_back(fit_result_resolution);
-        cb_fit_resolution_err_values.push_back(fit_result_resolution_err);
+        mixed_fit_mean_values.push_back(fit_result_mean);
+        mixed_fit_mean_err_values.push_back(fit_result_mean_err);
+        mixed_fit_sigma_values.push_back(fit_result_sigma);
+        mixed_fit_sigma_err_values.push_back(fit_result_sigma_err);
+        mixed_fit_resolution_values.push_back(fit_result_resolution);
+        mixed_fit_resolution_err_values.push_back(fit_result_resolution_err);
 
         fit_canvas.Write();
         fit_canvas.Close();
@@ -280,14 +276,12 @@ int main(int argc, char **argv) {
     canvas_25ns->Close();
 
 
-    std::vector<double> cb_10ns_fit_mean_values;
-    std::vector<double> cb_10ns_fit_mean_err_sys_values;
-    std::vector<double> cb_10ns_fit_mean_err_stat_values;
-    std::vector<double> cb_10ns_fit_sigma_values;
-    std::vector<double> cb_10ns_fit_sigma_err_sys_values;
-    std::vector<double> cb_10ns_fit_sigma_err_stat_values;
-    std::vector<double> cb_10ns_fit_resolution_values;
-    std::vector<double> cb_10ns_fit_resolution_err_values;
+    std::vector<double> mixed_10ns_fit_mean_values;
+    std::vector<double> mixed_10ns_fit_mean_err_values;
+    std::vector<double> mixed_10ns_fit_sigma_values;
+    std::vector<double> mixed_10ns_fit_sigma_err_values;
+    std::vector<double> mixed_10ns_fit_resolution_values;
+    std::vector<double> mixed_10ns_fit_resolution_err_values;
 
     TCanvas* canvas_10ns = new TCanvas("canvas_10ns", "10ns ADC Comparison", 800, 600);
     canvas_10ns->SetLeftMargin(0.15);
@@ -304,26 +298,24 @@ int main(int argc, char **argv) {
         } else {
             hist_adc_10ns_list[i]->Draw("E SAME");
         }
-        double fit_10ns_result_mean, fit_10ns_result_mean_err_sys, fit_10ns_result_mean_err_stat;
-        double fit_10ns_result_sigma, fit_10ns_result_sigma_err_sys, fit_10ns_result_sigma_err_stat;
+        double fit_10ns_result_mean, fit_10ns_result_mean_err;
+        double fit_10ns_result_sigma, fit_10ns_result_sigma_err;
         double fit_10ns_result_resolution, fit_10ns_result_resolution_err;
-        TCanvas fit_canvas = TCanvas(Form("fit_canvas_10ns_%dGeV", static_cast<int>(energy)), Form("CB Fit for 10ns ADC at %.0f GeV", energy), 800, 600);
+        TCanvas fit_canvas = TCanvas(Form("fit_canvas_10ns_%dGeV", static_cast<int>(energy)), Form("Mixed Fit for 10ns ADC at %.0f GeV", energy), 800, 600);
         fit_canvas.cd();
         TH1D *fit_hist = (TH1D*)hist_adc_10ns_list[i]->Clone(Form("fit_hist_10ns_%dGeV", static_cast<int>(energy)));
         fit_hist->Rebin(2);
         fit_hist->Draw("HIST");
-        crystalball_fit_th1d(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, color_list[i % color_list.size()], fit_10ns_result_mean, fit_10ns_result_mean_err_sys, fit_10ns_result_mean_err_stat, fit_10ns_result_sigma, fit_10ns_result_sigma_err_sys, fit_10ns_result_sigma_err_stat, fit_10ns_result_resolution, fit_10ns_result_resolution_err);
+        crystalball_gaussian_mix_fit(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, kRed, kBlue, fit_10ns_result_mean, fit_10ns_result_mean_err, fit_10ns_result_sigma, fit_10ns_result_sigma_err, fit_10ns_result_resolution, fit_10ns_result_resolution_err);
 
-        spdlog::info("Fit results for 10ns ADC at {} GeV: mean = {} +/- {} (sys) +/- {} (stat), sigma = {} +/- {} (sys) +/- {} (stat), resolution = {} +/- {}", energy, fit_10ns_result_mean, fit_10ns_result_mean_err_sys, fit_10ns_result_mean_err_stat, fit_10ns_result_sigma, fit_10ns_result_sigma_err_sys, fit_10ns_result_sigma_err_stat, fit_10ns_result_resolution, fit_10ns_result_resolution_err);
+        spdlog::info("Fit results for 10ns ADC at {} GeV: mean = {} +/- {}, sigma = {} +/- {}, resolution = {} +/- {}", energy, fit_10ns_result_mean, fit_10ns_result_mean_err, fit_10ns_result_sigma, fit_10ns_result_sigma_err, fit_10ns_result_resolution, fit_10ns_result_resolution_err);
 
-        cb_10ns_fit_mean_values.push_back(fit_10ns_result_mean);
-        cb_10ns_fit_mean_err_sys_values.push_back(fit_10ns_result_mean_err_sys);
-        cb_10ns_fit_mean_err_stat_values.push_back(fit_10ns_result_mean_err_stat);
-        cb_10ns_fit_sigma_values.push_back(fit_10ns_result_sigma);
-        cb_10ns_fit_sigma_err_sys_values.push_back(fit_10ns_result_sigma_err_sys);
-        cb_10ns_fit_sigma_err_stat_values.push_back(fit_10ns_result_sigma_err_stat);
-        cb_10ns_fit_resolution_values.push_back(fit_10ns_result_resolution);
-        cb_10ns_fit_resolution_err_values.push_back(fit_10ns_result_resolution_err);
+        mixed_10ns_fit_mean_values.push_back(fit_10ns_result_mean);
+        mixed_10ns_fit_mean_err_values.push_back(fit_10ns_result_mean_err);
+        mixed_10ns_fit_sigma_values.push_back(fit_10ns_result_sigma);
+        mixed_10ns_fit_sigma_err_values.push_back(fit_10ns_result_sigma_err);
+        mixed_10ns_fit_resolution_values.push_back(fit_10ns_result_resolution);
+        mixed_10ns_fit_resolution_err_values.push_back(fit_10ns_result_resolution_err);
 
         fit_canvas.Write();
         fit_canvas.Close();
@@ -341,11 +333,11 @@ int main(int argc, char **argv) {
     TCanvas* canvas_resolution = new TCanvas("canvas_resolution", "Energy Resolution", 800, 600);
     TGraphErrors* graph_resolution = new TGraphErrors("graph_resolution");
     graph_resolution->SetName("graph_resolution");
-    for (size_t i = 0; i < cb_fit_mean_values.size(); ++i) {
+    for (size_t i = 0; i < mixed_fit_mean_values.size(); ++i) {
         double x = found_run_energies ? run_energies[i] : static_cast<double>(i);
-        double y = cb_fit_resolution_values[i];
+        double y = mixed_fit_resolution_values[i];
         double xerr = 0.03 * x;
-        double yerr = cb_fit_resolution_err_values[i];
+        double yerr = mixed_fit_resolution_err_values[i];
         graph_resolution->SetPoint(i, x, y);
         graph_resolution->SetPointError(i, xerr, yerr);
     }
@@ -360,11 +352,11 @@ int main(int argc, char **argv) {
 
     TGraphErrors* graph_resolution_10ns = new TGraphErrors("graph_resolution_10ns");
     graph_resolution_10ns->SetName("graph_resolution_10ns");
-    for (size_t i = 0; i < cb_10ns_fit_mean_values.size(); ++i) {
+    for (size_t i = 0; i < mixed_10ns_fit_mean_values.size(); ++i) {
         double x = found_run_energies ? run_energies[i] : static_cast<double>(i);
-        double y = cb_10ns_fit_resolution_values[i];
+        double y = mixed_10ns_fit_resolution_values[i];
         double xerr = 0.03 * x;
-        double yerr = cb_10ns_fit_resolution_err_values[i];
+        double yerr = mixed_10ns_fit_resolution_err_values[i];
         graph_resolution_10ns->SetPoint(i, x, y);
         graph_resolution_10ns->SetPointError(i, xerr, yerr);
     }

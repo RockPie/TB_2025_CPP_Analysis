@@ -25,7 +25,7 @@ int main(int argc, char **argv) {
     std::vector<int> color_list = {kRed, kBlue, kGreen+2, kMagenta+2, kCyan+2, kOrange+2, kViolet+2};
 
     std::string output_file_name = "dump/402_ADC_EnergyScanCompare/ADC_comparison.root";
-    std::string simulation_adc_folder = "data/simulation/Config24/";
+    std::string simulation_adc_folder = "data/simulation/Config91/";
     std::string tb_adc_file = "dump/305_ADC_Fit_Compare/scan_0_analysis.root";
     std::string adc_toa_file = "dump/322_ToA_ADC_Compare/scan_0_analysis.root";
 
@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
     while ((primitive = (TObject*)next_primitive())) {
         spdlog::info("Primitive: {}, Class: {}", primitive->GetName(), primitive->ClassName());
         // look for graph_resolution_cb and graph_resolution_previous
-        if (std::string(primitive->GetName()) == "graph_resolution_cb") {
+        if (std::string(primitive->GetName()) == "graph_resolution_combined") {
             auto cb_fit_graph_input = (TGraphErrors*)primitive;
             cb_fit_graph = (TGraphErrors*)cb_fit_graph_input->Clone("cb_fit_graph");
             spdlog::info("Found graph named graph_resolution_cb");
@@ -212,27 +212,25 @@ int main(int argc, char **argv) {
     legend->SetBorderSize(0);
     legend->SetFillStyle(0);
 
-    std::vector<double> cb_fit_mean_values;
-    std::vector<double> cb_fit_mean_err_sys_values;
-    std::vector<double> cb_fit_mean_err_stat_values;
-    std::vector<double> cb_fit_sigma_values;
-    std::vector<double> cb_fit_sigma_err_sys_values;
-    std::vector<double> cb_fit_sigma_err_stat_values;
-    std::vector<double> cb_fit_resolution_values;
-    std::vector<double> cb_fit_resolution_err_values;
+    std::vector<double> mixed_fit_mean_values;
+    std::vector<double> mixed_fit_mean_err_values;
+    std::vector<double> mixed_fit_sigma_values;
+    std::vector<double> mixed_fit_sigma_err_values;
+    std::vector<double> mixed_fit_resolution_values;
+    std::vector<double> mixed_fit_resolution_err_values;
 
     std::vector<double> fit_range_sigma_values = {
         2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5
     };
     std::vector<double> fit_range_offset_values = {
-        0.0, 0.5, 1.0
+        -1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0
     };
 
     for (size_t i = 0; i < simulation_adc_hists.size(); ++i) {
         TH1D *sim_adc_hist = simulation_adc_hists[i];
         double energy = simulation_file_beam_energies[i];
         // normalize
-        sim_adc_hist->Scale(1.0 / sim_adc_hist->Integral());
+        // sim_adc_hist->Scale(1.5 / sim_adc_hist->Integral());
         // set max y
         sim_adc_hist->SetMaximum(sim_adc_hist->GetMaximum() * 1.4);
         if (i == 0)
@@ -243,27 +241,25 @@ int main(int argc, char **argv) {
             sim_adc_hist->Draw("HIST SAME");
         }
         // ! === Do the fitting here ===
-        double fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat;
-        double fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat;
+        double fit_result_mean, fit_result_mean_err;
+        double fit_result_sigma, fit_result_sigma_err;
         double fit_result_resolution, fit_result_resolution_err;
-        TCanvas fit_canvas = TCanvas(Form("fit_canvas_%dGeV", static_cast<int>(energy)), Form("CB Fit for %.0f GeV", energy), 800, 600);
+        TCanvas fit_canvas = TCanvas(Form("fit_canvas_%dGeV", static_cast<int>(energy)), Form("Mixed Fit for %.0f GeV", energy), 800, 600);
         fit_canvas.cd();
         // copy the histogram to the fit canvas
         TH1D *fit_hist = (TH1D*)sim_adc_hist->Clone(Form("fit_hist_%dGeV", static_cast<int>(energy)));
         fit_hist->Rebin(2);
         fit_hist->Draw("HIST");
-        crystalball_fit_th1d(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, color_list[i % color_list.size()], fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat, fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat, fit_result_resolution, fit_result_resolution_err);
+        crystalball_gaussian_mix_fit(fit_canvas, *fit_hist, fit_range_sigma_values, fit_range_offset_values, kRed, kBlue, fit_result_mean, fit_result_mean_err, fit_result_sigma, fit_result_sigma_err, fit_result_resolution, fit_result_resolution_err);
 
-        spdlog::info("Fit results for simulation ADC at {} GeV: mean = {} +/- {} (sys) +/- {} (stat), sigma = {} +/- {} (sys) +/- {} (stat), resolution = {} +/- {}", energy, fit_result_mean, fit_result_mean_err_sys, fit_result_mean_err_stat, fit_result_sigma, fit_result_sigma_err_sys, fit_result_sigma_err_stat, fit_result_resolution, fit_result_resolution_err);
+        spdlog::info("Fit results for simulation ADC at {} GeV: mean = {} +/- {}, sigma = {} +/- {}, resolution = {} +/- {}", energy, fit_result_mean, fit_result_mean_err, fit_result_sigma, fit_result_sigma_err, fit_result_resolution, fit_result_resolution_err);
 
-        cb_fit_mean_values.push_back(fit_result_mean);
-        cb_fit_mean_err_sys_values.push_back(fit_result_mean_err_sys);
-        cb_fit_mean_err_stat_values.push_back(fit_result_mean_err_stat);
-        cb_fit_sigma_values.push_back(fit_result_sigma);
-        cb_fit_sigma_err_sys_values.push_back(fit_result_sigma_err_sys);
-        cb_fit_sigma_err_stat_values.push_back(fit_result_sigma_err_stat);
-        cb_fit_resolution_values.push_back(fit_result_resolution);
-        cb_fit_resolution_err_values.push_back(fit_result_resolution_err);
+        mixed_fit_mean_values.push_back(fit_result_mean);
+        mixed_fit_mean_err_values.push_back(fit_result_mean_err);
+        mixed_fit_sigma_values.push_back(fit_result_sigma);
+        mixed_fit_sigma_err_values.push_back(fit_result_sigma_err);
+        mixed_fit_resolution_values.push_back(fit_result_resolution);
+        mixed_fit_resolution_err_values.push_back(fit_result_resolution_err);
 
         fit_canvas.Write();
         fit_canvas.Close();
@@ -283,20 +279,20 @@ int main(int argc, char **argv) {
     TLegend legend_mean(0.6, 0.7, 0.9, 0.9);
     legend_mean.SetBorderSize(0);
     legend_mean.SetFillStyle(0);
-    TGraphErrors mean_graph(cb_fit_mean_values.size());
-    for (size_t i = 0; i < cb_fit_mean_values.size(); ++i) {
+    TGraphErrors mean_graph(mixed_fit_mean_values.size());
+    for (size_t i = 0; i < mixed_fit_mean_values.size(); ++i) {
         double beam_energy = simulation_file_beam_energies[i];
-        mean_graph.SetPoint(i, beam_energy, cb_fit_mean_values[i]);
-        mean_graph.SetPointError(i, 0.03 * beam_energy, cb_fit_mean_err_stat_values[i]); // Use statistical error for the error bars
+        mean_graph.SetPoint(i, beam_energy, mixed_fit_mean_values[i]);
+        mean_graph.SetPointError(i, 0.03 * beam_energy, mixed_fit_mean_err_values[i]); // Use combined error for the error bars
     }
     mean_graph.SetMarkerStyle(20);
     mean_graph.SetMarkerSize(1);
     mean_graph.SetLineColor(kBlue);
     // set axis range    mean_graph.GetXaxis()->SetLimits(40, 400);
-    mean_graph.GetYaxis()->SetRangeUser(0, *std::max_element(cb_fit_mean_values.begin(), cb_fit_mean_values.end()) * 1.4);
+    mean_graph.GetYaxis()->SetRangeUser(0, *std::max_element(mixed_fit_mean_values.begin(), mixed_fit_mean_values.end()) * 1.4);
     mean_graph.SetTitle("ADC Mean;Energy (GeV);ADC Mean");
     // set y axis range
-    mean_graph.GetYaxis()->SetRangeUser(0, 650000);
+    mean_graph.GetYaxis()->SetRangeUser(0, 65000);
     mean_graph.Draw("AP");
     std::string sim_data_label2 = "Simulation " + folder_path.substr(folder_path.find_last_of("/\\") + 1);
     legend_mean.AddEntry(&mean_graph, sim_data_label2.c_str(), "p");
@@ -306,7 +302,7 @@ int main(int argc, char **argv) {
         linearity_graph_cb->SetLineColor(kMagenta+2);
         linearity_graph_cb->SetMarkerColor(kMagenta+2);
         linearity_graph_cb->Draw("P SAME");
-        legend_mean.AddEntry(linearity_graph_cb, "Beam Test CB Fit Mean", "p");
+        legend_mean.AddEntry(linearity_graph_cb, "Beam Test Mixed Fit Mean", "p");
     }
     legend_mean.Draw();
     mean_canvas.Modified();
@@ -320,11 +316,11 @@ int main(int argc, char **argv) {
     TLegend legend_resolution(0.6, 0.7, 0.9, 0.9);
     legend_resolution.SetBorderSize(0);
     legend_resolution.SetFillStyle(0);
-    TGraphErrors resolution_graph(cb_fit_mean_values.size());
-    for (size_t i = 0; i < cb_fit_mean_values.size(); ++i) {
+    TGraphErrors resolution_graph(mixed_fit_mean_values.size());
+    for (size_t i = 0; i < mixed_fit_mean_values.size(); ++i) {
         double beam_energy = simulation_file_beam_energies[i];
-        resolution_graph.SetPoint(i, beam_energy, cb_fit_resolution_values[i]);
-        resolution_graph.SetPointError(i, 0.03 * beam_energy, cb_fit_resolution_err_values[i]);
+        resolution_graph.SetPoint(i, beam_energy, mixed_fit_resolution_values[i]);
+        resolution_graph.SetPointError(i, 0.03 * beam_energy, mixed_fit_resolution_err_values[i]);
     }
     resolution_graph.SetMarkerStyle(20);
     resolution_graph.SetMarkerSize(1);
@@ -344,7 +340,7 @@ int main(int argc, char **argv) {
         cb_fit_graph->SetLineColor(kMagenta+2);
         cb_fit_graph->SetMarkerColor(kMagenta+2);
         cb_fit_graph->Draw("P SAME");
-        legend_resolution.AddEntry(cb_fit_graph, "Beam Test CB Fit", "p");
+        legend_resolution.AddEntry(cb_fit_graph, "Beam Test Mixed Fit", "p");
     }
     if (previous_prototype_graph) {
         previous_prototype_graph->SetMarkerStyle(22);

@@ -850,4 +850,338 @@ inline void crystalball_fit_th1d(TCanvas& canvas, TH1D& hist, std::vector<double
     resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
 }
 
+inline void gaussian_fit_th1d(TCanvas& canvas, TH1D& hist, std::vector<double>& fit_range_sigma, std::vector<double>& fit_range_offset, int color, double& mean_avg, double& mean_err_sys, double& mean_err_stat, double& sigma_avg, double& sigma_err_sys, double& sigma_err_stat, double& resolution, double& resolution_err) {
+    const double mean = hist.GetMean();
+    const double sigma = hist.GetRMS();
+    const double amp = hist.GetMaximum();
+
+    // * --- Pre fit round 1 ---
+    double pre_fit_1_min = mean - 2.0 * sigma;
+    double pre_fit_1_max = mean + 3.0 * sigma;
+    if (pre_fit_1_min < 0) pre_fit_1_min = 0.0;
+    TF1* pre_fit_1 = new TF1("gaus_fit_pre", "gaus", pre_fit_1_min, pre_fit_1_max);
+    pre_fit_1->SetParameters(amp, mean, sigma);
+    hist.Fit(pre_fit_1, "QNR");
+    const double pf1_amp = pre_fit_1->GetParameter(0);
+    const double pf1_mean = pre_fit_1->GetParameter(1);
+    const double pf1_sigma = pre_fit_1->GetParameter(2);
+    delete pre_fit_1;
+
+    // * --- Pre fit round 2 ---
+    double pre_fit_2_min = pf1_mean - 1.5 * pf1_sigma;
+    double pre_fit_2_max = pf1_mean + 2.5 * pf1_sigma;
+    if (pre_fit_2_min < 0) pre_fit_2_min = 0.0;
+    TF1* pre_fit_2 = new TF1("gaus_fit_pre2", "gaus", pre_fit_2_min, pre_fit_2_max);
+    pre_fit_2->SetParameters(pf1_amp, pf1_mean, pf1_sigma);
+    hist.Fit(pre_fit_2, "QNR");
+    const double pf2_amp = pre_fit_2->GetParameter(0);
+    const double pf2_mean = pre_fit_2->GetParameter(1);
+    const double pf2_sigma = pre_fit_2->GetParameter(2);
+    delete pre_fit_2;
+
+    // * --- Gaussian Fit ---
+    std::vector<double> fit_param_0_list;
+    std::vector<double> fit_param_1_list;
+    std::vector<double> fit_param_2_list;
+    std::vector<double> fit_param_0_err_list;
+    std::vector<double> fit_param_1_err_list;
+    std::vector<double> fit_param_2_err_list;
+    for (const auto& offset : fit_range_offset) {
+        for (const auto& scale : fit_range_sigma) {
+            double gaus_fit_min = pf2_mean - scale * pf2_sigma + offset;
+            double gaus_fit_max = pf2_mean + scale * pf2_sigma + offset;
+            if (gaus_fit_min < 0) gaus_fit_min = 0.0;
+            TF1* gaus_fit = new TF1("gaussian_fit", "gaus", gaus_fit_min, gaus_fit_max);
+            gaus_fit->SetParameters(pf2_amp, pf2_mean, pf2_sigma);
+            hist.Fit(gaus_fit, "QNR+");
+            canvas.cd();
+            gaus_fit->SetLineColorAlpha(color, 0.2);
+            gaus_fit->Draw("same");
+            fit_param_0_list.push_back(gaus_fit->GetParameter(0));
+            fit_param_1_list.push_back(gaus_fit->GetParameter(1));
+            fit_param_2_list.push_back(gaus_fit->GetParameter(2));
+            fit_param_0_err_list.push_back(gaus_fit->GetParError(0));
+            fit_param_1_err_list.push_back(gaus_fit->GetParError(1));
+            fit_param_2_err_list.push_back(gaus_fit->GetParError(2));
+        }
+    }
+    mean_sigma_list_calculator(
+        fit_param_1_list,
+        fit_param_1_err_list,
+        fit_param_2_list,
+        fit_param_2_err_list,
+        mean_avg,
+        mean_err_sys,
+        mean_err_stat,
+        sigma_avg,
+        sigma_err_sys,
+        sigma_err_stat
+    );
+    resolution = sigma_avg / mean_avg * 100.0;
+    double mean_err = std::sqrt(mean_err_sys * mean_err_sys + mean_err_stat * mean_err_stat);
+    double sigma_err = std::sqrt(sigma_err_sys * sigma_err_sys + sigma_err_stat * sigma_err_stat);
+    resolution_err = resolution * std::sqrt( (sigma_err / sigma_avg) * (sigma_err / sigma_avg) + (mean_err / mean_avg) * (mean_err / mean_avg) );
+}
+
+inline void crystalball_gaussian_mix_fit(TCanvas& canvas, TH1D& hist, std::vector<double>& fit_range_sigma, std::vector<double>& fit_range_offset, int color_crystalball, int color_gaussian, double& mean_avg_cb, double& mean_err_sys_cb, double& mean_err_stat_cb, double& sigma_avg_cb, double& sigma_err_sys_cb, double& sigma_err_stat_cb, double& resolution_cb, double& resolution_err_cb, double& mean_avg_gaus, double& mean_err_sys_gaus, double& mean_err_stat_gaus, double& sigma_avg_gaus, double& sigma_err_sys_gaus, double& sigma_err_stat_gaus, double& resolution_gaus, double& resolution_err_gaus, double& mixed_mean_mean, double& mixed_mean_err, double& mixed_sigma_mean, double& mixed_sigma_err, double& mixed_resolution_mean, double& mixed_resolution_err) {
+    crystalball_fit_th1d(canvas, hist, fit_range_sigma, fit_range_offset, color_crystalball, mean_avg_cb, mean_err_sys_cb, mean_err_stat_cb, sigma_avg_cb, sigma_err_sys_cb, sigma_err_stat_cb, resolution_cb, resolution_err_cb);
+    gaussian_fit_th1d(canvas, hist, fit_range_sigma, fit_range_offset, color_gaussian, mean_avg_gaus, mean_err_sys_gaus, mean_err_stat_gaus, sigma_avg_gaus, sigma_err_sys_gaus, sigma_err_stat_gaus, resolution_gaus, resolution_err_gaus);
+
+    mixed_mean_mean = 0.5 * (mean_avg_cb + mean_avg_gaus);
+    // take the systematic_diff as the difference between the two fit means, and the systematic_window as the error of the systematic of each fit, statistical as the error from each
+    double mixed_mean_err_sys_diff = 0.5 * std::abs(mean_avg_cb - mean_avg_gaus);
+    double mixed_mean_err_sys_window = 0.5 * std::sqrt(mean_err_sys_cb * mean_err_sys_cb + mean_err_sys_gaus * mean_err_sys_gaus);
+    double mixed_mean_err_sys = 0.5 * std::sqrt(mixed_mean_err_sys_diff * mixed_mean_err_sys_diff + mixed_mean_err_sys_window * mixed_mean_err_sys_window);
+    double mixed_mean_err_stat = 0.5 * std::sqrt(mean_err_stat_cb * mean_err_stat_cb + mean_err_stat_gaus * mean_err_stat_gaus);
+    mixed_mean_err = std::sqrt(mixed_mean_err_sys * mixed_mean_err_sys + mixed_mean_err_stat * mixed_mean_err_stat);
+    mixed_mean_mean = 0.5 * (mean_avg_cb + mean_avg_gaus);
+
+    mixed_sigma_mean = 0.5 * (sigma_avg_cb + sigma_avg_gaus);
+    double mixed_sigma_err_sys_diff = 0.5 * std::abs(sigma_avg_cb - sigma_avg_gaus);
+    double mixed_sigma_err_sys_window = 0.5 *std::sqrt(sigma_err_sys_cb * sigma_err_sys_cb + sigma_err_sys_gaus * sigma_err_sys_gaus);
+    double mixed_sigma_err_sys = 0.5 * std::sqrt(mixed_sigma_err_sys_diff * mixed_sigma_err_sys_diff + mixed_sigma_err_sys_window * mixed_sigma_err_sys_window);
+    double mixed_sigma_err_stat = 0.5 * std::sqrt(sigma_err_stat_cb * sigma_err_stat_cb + sigma_err_stat_gaus * sigma_err_stat_gaus);
+    mixed_sigma_err = std::sqrt(mixed_sigma_err_sys * mixed_sigma_err_sys + mixed_sigma_err_stat * mixed_sigma_err_stat);
+    mixed_sigma_mean = 0.5 * (sigma_avg_cb + sigma_avg_gaus);
+
+    mixed_resolution_mean = 0.5 * (resolution_cb + resolution_gaus);
+    // Use method difference as systematic uncertainty
+    double mixed_resolution_err_sys = 0.5 * std::abs(resolution_cb - resolution_gaus);
+    // Use average of fit errors as fitting uncertainty
+    double mixed_resolution_err_fit = 0.5 * std::sqrt(resolution_err_cb * resolution_err_cb + resolution_err_gaus * resolution_err_gaus);
+    // Combine in quadrature
+    mixed_resolution_err = std::sqrt(mixed_resolution_err_sys * mixed_resolution_err_sys + mixed_resolution_err_fit * mixed_resolution_err_fit);
+}
+
+inline void crystalball_gaussian_mix_fit(TCanvas& canvas, TH1D& hist, std::vector<double>& fit_range_sigma, std::vector<double>& fit_range_offset, int color_crystalball, int color_gaussian, double& mixed_mean_mean, double& mixed_mean_err, double& mixed_sigma_mean, double& mixed_sigma_err, double& mixed_resolution_mean, double& mixed_resolution_err){
+    double mean_avg_cb, mean_err_sys_cb, mean_err_stat_cb, sigma_avg_cb, sigma_err_sys_cb, sigma_err_stat_cb, resolution_cb, resolution_err_cb;
+    double mean_avg_gaus, mean_err_sys_gaus, mean_err_stat_gaus, sigma_avg_gaus, sigma_err_sys_gaus, sigma_err_stat_gaus, resolution_gaus, resolution_err_gaus;
+    crystalball_gaussian_mix_fit(canvas, hist, fit_range_sigma, fit_range_offset, color_crystalball, color_gaussian, mean_avg_cb, mean_err_sys_cb, mean_err_stat_cb, sigma_avg_cb, sigma_err_sys_cb, sigma_err_stat_cb, resolution_cb, resolution_err_cb, mean_avg_gaus, mean_err_sys_gaus, mean_err_stat_gaus, sigma_avg_gaus, sigma_err_sys_gaus, sigma_err_stat_gaus, resolution_gaus, resolution_err_gaus, mixed_mean_mean, mixed_mean_err, mixed_sigma_mean, mixed_sigma_err, mixed_resolution_mean, mixed_resolution_err);
+}
+
+inline void pre_fit_th1d(TCanvas& canvas, TH1D& hist, int color_pre_1, int color_pre_2, double& pre_fit_2_mean, double& pre_fit_2_sigma, double& pre_fit_2_amp, bool draw=true) {
+    const double mean = hist.GetMean();
+    const double sigma = hist.GetRMS();
+    const double amp = hist.GetMaximum();
+
+    // * --- Pre fit round 1 ---
+    double pre_fit_1_min = mean - 2.0 * sigma;
+    double pre_fit_1_max = mean + 3.0 * sigma;
+    if (pre_fit_1_min < 0) pre_fit_1_min = 0.0;
+    TF1* pre_fit_1 = new TF1("gaus_fit_pre", "gaus", pre_fit_1_min, pre_fit_1_max);
+    pre_fit_1->SetParameters(amp, mean, sigma);
+    hist.Fit(pre_fit_1, "QNR");
+    if (draw){
+        canvas.cd();
+        pre_fit_1->SetLineColorAlpha(color_pre_1, 1.0);
+        pre_fit_1->Draw("same");
+    }
+    double pre_fit_1_mean = pre_fit_1->GetParameter(1);
+    double pre_fit_1_sigma = pre_fit_1->GetParameter(2);
+    double pre_fit_1_amp = pre_fit_1->GetParameter(0);
+    delete pre_fit_1;
+
+    // * --- Pre fit round 2 ---
+    double pre_fit_2_min = pre_fit_1_mean - 1.5 * pre_fit_1_sigma;
+    double pre_fit_2_max = pre_fit_1_mean + 2.5 * pre_fit_1_sigma;
+    if (pre_fit_2_min < 0) pre_fit_2_min = 0.0;
+    TF1* pre_fit_2 = new TF1("gaus_fit_pre2", "gaus", pre_fit_2_min, pre_fit_2_max);
+    pre_fit_2->SetParameters(pre_fit_1_amp, pre_fit_1_mean, pre_fit_1_sigma);
+    hist.Fit(pre_fit_2, "QNR");
+    if (draw){
+        canvas.cd();
+        pre_fit_2->SetLineColorAlpha(color_pre_2, 1.0);
+        pre_fit_2->Draw("same");
+    }
+    pre_fit_2_mean = pre_fit_2->GetParameter(1);
+    pre_fit_2_sigma = pre_fit_2->GetParameter(2);
+    pre_fit_2_amp = pre_fit_2->GetParameter(0);
+    delete pre_fit_2;
+}
+
+inline void mean_sigma_list_calculator_nom(int nominal_index, const std::vector<double>& mean_list, const std::vector<double>& mean_err_list, const std::vector<double>& sigma_list, const std::vector<double>& sigma_err_list, double& mean_nom, double& mean_err_sys, double& mean_err_stat, double& sigma_nom, double& sigma_err_sys, double& sigma_err_stat) {
+    if (nominal_index < 0 || nominal_index >= (int)mean_list.size()) {
+        throw std::runtime_error("Invalid nominal index for mean_sigma_list_calculator_nom");
+    }
+    mean_nom = mean_list[nominal_index];
+    sigma_nom = sigma_list[nominal_index];
+    mean_err_sys = 0.0;
+    sigma_err_sys = 0.0;
+    mean_err_stat = mean_err_list[nominal_index];
+    sigma_err_stat = sigma_err_list[nominal_index];
+    // use the maximum deviation from the nominal among all variations as the systematic uncertainty
+    for (size_t i = 0; i < mean_list.size(); ++i) {
+        double mean_dev = std::abs(mean_list[i] - mean_nom);
+        double sigma_dev = std::abs(sigma_list[i] - sigma_nom);
+        if (mean_dev > mean_err_sys) mean_err_sys = mean_dev;
+        if (sigma_dev > sigma_err_sys) sigma_err_sys = sigma_dev;
+    }
+}
+
+inline void gaussian_fit_th1d_nom(TCanvas& canvas, TH1D& hist, const std::vector<double>& fit_range_sigma, const std::vector<double>& fit_range_offset, int color, double& mean_nom, double& sigma_nom, double& mean_err_stat, double& sigma_err_stat, double& mean_err_sys, double& sigma_err_sys, TF1*& nominal_fit_func) {
+    double pre_fit_mean, pre_fit_sigma, pre_fit_amp;
+    pre_fit_th1d(canvas, hist, color, color, pre_fit_mean, pre_fit_sigma, pre_fit_amp, false);
+
+    int current_index = 0;
+    const double nominal_offset = 0.0; // assuming the nominal is at 0 offset
+    const double nominal_sigma = 2.5;
+    int nominal_index = -1;
+    
+    // * --- Gaussian Fit ---
+    std::vector<double> fit_param_0_list;
+    std::vector<double> fit_param_1_list;
+    std::vector<double> fit_param_2_list;
+    std::vector<double> fit_param_0_err_list;
+    std::vector<double> fit_param_1_err_list;
+    std::vector<double> fit_param_2_err_list;
+    for (const auto& offset : fit_range_offset) {
+        for (const auto& scale : fit_range_sigma) {
+            if (offset == nominal_offset && scale == nominal_sigma) {
+                nominal_index = current_index;
+            }
+            double gaus_fit_min = pre_fit_mean - scale * pre_fit_sigma + offset;
+            double gaus_fit_max = pre_fit_mean + scale * pre_fit_sigma + offset;
+            if (gaus_fit_min < 0) gaus_fit_min = 0.0;
+            TF1* gaus_fit = new TF1("gaussian_fit", "gaus", gaus_fit_min, gaus_fit_max);
+            gaus_fit->SetParameters(pre_fit_amp, pre_fit_mean, pre_fit_sigma);
+            hist.Fit(gaus_fit, "QNR+");
+            canvas.cd();
+            gaus_fit->SetLineColorAlpha(color, 0.5);
+            gaus_fit->Draw("same");
+            fit_param_0_list.push_back(gaus_fit->GetParameter(0));
+            fit_param_1_list.push_back(gaus_fit->GetParameter(1));
+            fit_param_2_list.push_back(gaus_fit->GetParameter(2));
+            fit_param_0_err_list.push_back(gaus_fit->GetParError(0));
+            fit_param_1_err_list.push_back(gaus_fit->GetParError(1));
+            fit_param_2_err_list.push_back(gaus_fit->GetParError(2));
+            if (offset == nominal_offset && scale == nominal_sigma) {
+                nominal_fit_func = gaus_fit;
+            }
+            current_index++;
+        } // end of scale loop
+    } // end of offset loop
+
+    if (nominal_index == -1) {
+        throw std::runtime_error("Nominal index not found in fit ranges for gaussian_fit_th1d_nom");
+    }
+    mean_sigma_list_calculator_nom(
+        nominal_index,
+        fit_param_1_list,
+        fit_param_1_err_list,
+        fit_param_2_list,
+        fit_param_2_err_list,
+        mean_nom,
+        mean_err_sys,
+        mean_err_stat,
+        sigma_nom,
+        sigma_err_sys,
+        sigma_err_stat
+    );
+}
+
+inline void crystalball_fit_th1d_nom(TCanvas& canvas, TH1D& hist, const std::vector<double>& fit_range_sigma, const std::vector<double>& fit_range_offset, int color, double& mean_nom, double& sigma_nom, double& mean_err_stat, double& sigma_err_stat, double& mean_err_sys, double& sigma_err_sys, TF1*& nominal_fit_func) {
+    double pre_fit_mean, pre_fit_sigma, pre_fit_amp;
+    pre_fit_th1d(canvas, hist, color, color, pre_fit_mean, pre_fit_sigma, pre_fit_amp, false);
+
+    int current_index = 0;
+    const double nominal_offset = 0.0; // assuming the nominal is at 0 offset
+    const double nominal_sigma = 2.5;
+    int nominal_index = -1;
+
+    // * --- Crystal Ball Fit ---
+    std::vector<double> fit_param_0_list;
+    std::vector<double> fit_param_1_list;
+    std::vector<double> fit_param_2_list;
+    std::vector<double> fit_param_3_list;
+    std::vector<double> fit_param_4_list;
+    std::vector<double> fit_param_0_err_list;
+    std::vector<double> fit_param_1_err_list;
+    std::vector<double> fit_param_2_err_list;
+    std::vector<double> fit_param_3_err_list;
+    std::vector<double> fit_param_4_err_list;
+    for (const auto& offset : fit_range_offset) {
+        for (const auto& scale : fit_range_sigma) {
+            if (offset == nominal_offset && scale == nominal_sigma) {
+                nominal_index = current_index;
+            }
+            double cb_fit_min = pre_fit_mean - scale * pre_fit_sigma + offset;
+            double cb_fit_max = pre_fit_mean + scale * pre_fit_sigma + offset;
+            if (cb_fit_min < 0) cb_fit_min = 0.0;
+            TF1* cb_fit = new TF1("crystal_ball_fit", crystallball_left, cb_fit_min, cb_fit_max, 5);
+            cb_fit->SetParameters(pre_fit_amp, 1.5, 5.0, pre_fit_mean, pre_fit_sigma);
+            hist.Fit(cb_fit, "QNR+");
+            canvas.cd();
+            cb_fit->SetLineColorAlpha(color, 0.5);
+            cb_fit->Draw("same");
+            fit_param_0_list.push_back(cb_fit->GetParameter(0));
+            fit_param_1_list.push_back(cb_fit->GetParameter(1));
+            fit_param_2_list.push_back(cb_fit->GetParameter(2));
+            fit_param_3_list.push_back(cb_fit->GetParameter(3));
+            fit_param_4_list.push_back(cb_fit->GetParameter(4));
+            fit_param_0_err_list.push_back(cb_fit->GetParError(0));
+            fit_param_1_err_list.push_back(cb_fit->GetParError(1));
+            fit_param_2_err_list.push_back(cb_fit->GetParError(2));
+            fit_param_3_err_list.push_back(cb_fit->GetParError(3));
+            fit_param_4_err_list.push_back(cb_fit->GetParError(4));
+            if (offset == nominal_offset && scale == nominal_sigma) {
+                nominal_fit_func = cb_fit;
+            }
+            current_index++;
+        } // end of scale loop
+    } // end of offset loop
+
+    if (nominal_index == -1) {
+        throw std::runtime_error("Nominal index not found in fit ranges for crystalball_fit_th1d_nom");
+    }
+    mean_sigma_list_calculator_nom(
+        nominal_index,
+        fit_param_3_list,
+        fit_param_3_err_list,
+        fit_param_4_list,
+        fit_param_4_err_list,
+        mean_nom,
+        mean_err_sys,
+        mean_err_stat,
+        sigma_nom,
+        sigma_err_sys,
+        sigma_err_stat
+    );
+
+}
+
+inline void cb_gaus_combine(double value_cb_nom, double err_cb_stat, double err_cb_sys, double value_gaus_nom, double err_gaus_stat, double err_gaus_sys, double& value_mix, double& err_stat_mix, double& err_sys_mix) {
+    value_mix = value_cb_nom; // use cb as the nominal value
+    err_stat_mix = err_cb_stat; // use cb stat error as the nominal stat error
+    double err_sys_shape_diff = std::abs(value_cb_nom - value_gaus_nom);
+    err_sys_mix = std::sqrt(err_cb_sys * err_cb_sys + err_sys_shape_diff * err_sys_shape_diff);
+}
+
+inline void resolution_calculator(
+    double mean,
+    double mean_err_stat,
+    double mean_err_sys,
+    double sigma,
+    double sigma_err_stat,
+    double sigma_err_sys,
+    double& resolution,
+    double& resolution_err_stat,
+    double& resolution_err_sys)
+{
+    resolution = 100.0 * sigma / mean;
+
+    double rel_sigma_stat = sigma_err_stat / sigma;
+    double rel_mean_stat  = mean_err_stat  / mean;
+
+    double rel_sigma_sys = sigma_err_sys / sigma;
+    double rel_mean_sys  = mean_err_sys  / mean;
+
+    resolution_err_stat = resolution *
+        std::sqrt(rel_sigma_stat*rel_sigma_stat +
+                  rel_mean_stat*rel_mean_stat);
+
+    resolution_err_sys = resolution *
+        std::sqrt(rel_sigma_sys*rel_sigma_sys +
+                  rel_mean_sys*rel_mean_sys);
+}
+
 #endif

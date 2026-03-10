@@ -54,7 +54,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // dump/102_EventMatch/beamtests/RunXXXX.root
     script_input_file  = parsed["file"].as<std::string>();
     std::string script_input_run_number = script_input_file.substr(script_input_file.find_last_of("Run") + 1).append(4, '0').substr(0, 4);
     script_output_file = parsed["output"].as<std::string>();
@@ -64,6 +63,8 @@ int main(int argc, char **argv) {
     configure_logger(script_verbose);
 
     spdlog::info("Input file: {}", script_input_file);
+
+    const int CM_channel = 9;
 
     if (access(script_input_file.c_str(), F_OK) == -1) {
         spdlog::error("Input file {} does not exist!", script_input_file);
@@ -516,6 +517,9 @@ int main(int argc, char **argv) {
     int seed_channel_col = seed_channel_pid % NX;
     int seed_channel_row = seed_channel_pid / NX;
     spdlog::info("Seed channel {} mapped to pixel ID {} at (col={}, row={})", seed_channel, seed_channel_pid, seed_channel_col, seed_channel_row);
+    
+    std::vector<std::vector<std::vector<double>>> adc_samples_in_CM_channels_all_vldb(
+        vldb_number, std::vector<std::vector<double>>(4, std::vector<double>(machine_gun_samples, 0.0)));
 
     for (int entry = 0; entry < entry_max; entry++) {
         input_tree->GetEntry(entry);
@@ -584,8 +588,33 @@ int main(int argc, char **argv) {
             // spdlog::warn("Event {}: Seed channel {} has no ToA!", entry, seed_channel);
         }
         for (int vldb_id = 0; vldb_id < vldb_number; vldb_id++) {
+            std::vector<std::vector<double>>& adc_samples_in_CM_channels = adc_samples_in_CM_channels_all_vldb[vldb_id];
+            for (int half = 0; half < 4; half++) {
+                int channel = half * (FPGA_CHANNEL_NUMBER / 4) + CM_channel;
+                std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
+                std::vector<UInt_t> adc_samples; // all samples for common-mode calculation
+                adc_pedestal_samples.reserve(3);
+                adc_samples.reserve(machine_gun_samples);
+                for (int sample = 0; sample < machine_gun_samples; sample++) {
+                    int idx = sample*FPGA_CHANNEL_NUMBER + channel;
+                    UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
+                    if (sample < 3) {
+                        adc_pedestal_samples.push_back(adc_value);
+                    }
+                    adc_samples.push_back(adc_value);
+                } // end of sample loop
+
+                double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
+                for (int sample = 0; sample < machine_gun_samples; sample++) {
+                    adc_samples_in_CM_channels[half][sample] = static_cast<double>(adc_samples[sample]) - adc_pedestal;
+                }
+            }
             // channel loop
             for (int channel = 0; channel < FPGA_CHANNEL_NUMBER; channel++) {
+                int valid_channel_number = get_valid_fpga_channel(channel);
+                int channel_half_index = (channel / (FPGA_CHANNEL_NUMBER / 4)) % 4;
+
+                std::vector<double> CM_samples = adc_samples_in_CM_channels[channel_half_index];
                 
                 int gch = channel + vldb_id * FPGA_CHANNEL_NUMBER;
                 int pid = ch2pid[gch];
@@ -597,13 +626,13 @@ int main(int argc, char **argv) {
                 if (uni_col < 0 || uni_col >= NX || uni_row < 0 || uni_row >= NY)
                     continue;
 
-                std::vector<UInt_t> adc_pedestal_samples; // only take the first 3 samples
-                std::vector<UInt_t> adc_samples;
+                std::vector<double> adc_pedestal_samples; // only take the first 3 samples
+                std::vector<double> adc_samples;
                 adc_samples.reserve(machine_gun_samples);
                 int adc_peak_index = -1;
-                UInt_t adc_peak_value = 0;
+                double adc_peak_value = 0;
                 int adc_peak_ranged_index = -1;
-                UInt_t adc_peak_ranged_value = 0;
+                double adc_peak_ranged_value = 0;
                 adc_pedestal_samples.reserve(3);
 
                 int toa_showup_times = 0;
@@ -616,9 +645,12 @@ int main(int argc, char **argv) {
 
                 for (int sample = 0; sample < machine_gun_samples; sample++) {
                     int idx = sample*FPGA_CHANNEL_NUMBER + channel;
-                    UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
+                    // UInt_t adc_value = val0_list_pools[vldb_id][0][idx];
+                    double adc_value = static_cast<double>(val0_list_pools[vldb_id][0][idx]);
                     UInt_t tot_value = val1_list_pools[vldb_id][0][idx];
                     UInt_t toa_value = val2_list_pools[vldb_id][0][idx];
+
+                    adc_value -= CM_samples[sample]; // common-mode subtraction
                     if (sample < 3) {
                         adc_pedestal_samples.push_back(adc_value);
                     }
@@ -649,10 +681,41 @@ int main(int argc, char **argv) {
                 } // end of sample loop
                 // double adc_pedestal = pedestal_median_of_first3(adc_pedestal_samples);
                 double adc_pedestal = pedestal_average_of_first3(adc_pedestal_samples);
-                double adc_peak_value_pede_sub = static_cast<double>(adc_peak_ranged_value) - adc_pedestal;
-                adc_sum += adc_peak_value_pede_sub;
+                // calculate the average ADC inside the window
+                // double adc_sum_in_window = 0.0;
+                // int adc_count_in_window = 0;
+                // for (int sample = adc_peak_ranged_index - 1; sample <= adc_peak_ranged_index + 1; sample++) {
+                //     if (sample >= 0 && sample < machine_gun_samples) {
+                //         adc_sum_in_window += adc_samples[sample] - adc_pedestal;
+                //         adc_count_in_window++;
+                //     }
+                // }
+                // if (adc_count_in_window > 0) {
+                //     adc_peak_ranged_value = adc_sum_in_window / static_cast<double>(adc_count_in_window);
+                // } else {
+                //     adc_peak_ranged_value = 0.0;
+                // }
+                // double adc_peak_value_pede_sub = adc_peak_ranged_value;
+                double adc_peak_value_pede_sub = adc_peak_ranged_value - adc_pedestal;
+                if (adc_peak_value_pede_sub > 0) {
+                    bool do_sum_flag = true;
+                    if (valid_channel_number == -1) {
+                        do_sum_flag = false; // skip channels that are not in the valid channel list
+                    }
+                    if (valid_channel_number % 8 == 0) {
+                        do_sum_flag = false; // skip the first channel of each half, which is used for common-mode calculation and usually has lower dynamic range
+                    }
+                    if (vldb_id == 0 && channel >= 76) {
+                        do_sum_flag = false; // skip the last 4 channels of VLDB 0, which are known to be noisy and have lower dynamic range
+                    }
+                    if (do_sum_flag) {
+                        adc_sum += adc_peak_value_pede_sub;
+                        h1i_toa_frequency->Fill(tot_showup_times);
+                    }
+                }
+                // adc_sum += adc_peak_value_pede_sub;
 
-                h1i_toa_frequency->Fill(tot_showup_times);
+                
                 if (toa_showup_times >= 1) {
                     num_single_ToA++;
                     // * --- DNL correction ---
